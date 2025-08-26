@@ -54,6 +54,7 @@ from sglang.srt.model_loader.weight_utils import (
 )
 from sglang.srt.utils import add_prefix, make_layers
 from sglang.utils import get_exception_traceback
+from types import MethodType
 
 logger = logging.getLogger(__name__)
 
@@ -436,6 +437,11 @@ class LlamaForCausalLM(nn.Module):
 
         self.capture_aux_hidden_states = False
 
+        self.use_clusterfusion = False
+        if self.use_clusterfusion:
+            self._forward_vanilla = self.forward
+            self.forward = MethodType(LlamaForCausalLM.forward_clusterfusion, self)
+
     def _init_model(
         self,
         config: LlamaConfig,
@@ -479,6 +485,47 @@ class LlamaForCausalLM(nn.Module):
                 return self.pooler(hidden_states, forward_batch)
         else:
             return hidden_states
+
+    @torch.no_grad()
+    def forward_clusterfusion(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        forward_batch: ForwardBatch,
+        input_embeds: torch.Tensor = None,
+        get_embedding: bool = False,
+        pp_proxy_tensors: Optional[PPProxyTensors] = None,
+    ) -> LogitsProcessorOutput:
+        # 可选：向下游传递开关，便于 DecoderLayer/Attention 选择 fused kernel
+        if hasattr(forward_batch, "use_clusterfusion"):
+            forward_batch.use_clusterfusion = True
+
+        # hidden_states = self.model(
+            # input_ids,
+            # positions,
+            # forward_batch,
+            # input_embeds,
+            # pp_proxy_tensors=pp_proxy_tensors,
+        # )
+# 
+        # aux_hidden_states = None
+        # if self.capture_aux_hidden_states:
+            # hidden_states, aux_hidden_states = hidden_states
+# 
+        # if self.pp_group.is_last_rank:
+            # if not get_embedding:
+                # return self.logits_processor(
+                    # input_ids,
+                    # hidden_states,
+                    # self.lm_head,
+                    # forward_batch,
+                    # aux_hidden_states,
+                # )
+            # else:
+                # return self.pooler(hidden_states, forward_batch)
+        # else:
+            # return hidden_states
+        raise NotImplementedError()
 
     @torch.no_grad()
     def forward_split_prefill(
