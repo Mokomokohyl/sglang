@@ -541,6 +541,26 @@ class ClusterFusionBackend(AttentionBackend):
         forward_batch: ForwardBatch,
         save_kv_cache=True,
     ):
+        # Check if we should use ClusterFusion fused kernel
+        # Only for batch_size=1 decode mode
+        use_fused_kernel = (
+            forward_batch.forward_mode.is_decode() and 
+            q.shape[0] == 1 and
+            hasattr(forward_batch, '_use_clusterfusion_kernel') and
+            forward_batch._use_clusterfusion_kernel
+        )
+        
+        if use_fused_kernel:
+            # Use ClusterFusion fused kernel - delegate to the model layer
+            # The fused kernel handles RMSNorm + Attention + Output projection
+            # This method should not be called directly when using fused kernel
+            # Instead, the model layer's forward_clusterfusion should be called
+            raise RuntimeError(
+                "forward_decode should not be called directly when using ClusterFusion fused kernel. "
+                "Use the model layer's forward_clusterfusion method instead."
+            )
+        
+        # Standard FlashInfer path
         decode_wrapper = self.forward_metadata.decode_wrappers[
             self._get_wrapper_idx(layer)
         ]
@@ -568,6 +588,104 @@ class ClusterFusionBackend(AttentionBackend):
         )
 
         return o.view(-1, layer.tp_q_head_num * layer.head_dim)
+
+    def forward_decode_fused(
+        self,
+        hidden_states: torch.Tensor,
+        layer_weights: dict,
+        positions: torch.Tensor,
+        forward_batch: ForwardBatch,
+        layer_id: int,
+        save_kv_cache = True,
+    ) -> torch.Tensor:
+        """
+        Forward pass using ClusterFusion fused kernel for batch_size=1 decode.
+        
+        Args:
+            hidden_states: Input hidden states [1, hidden_dim]
+            layer_weights: Dictionary containing all layer weights
+            positions: Position indices for RoPE
+            forward_batch: Forward batch information
+            layer_id: Current layer ID
+            
+        Returns:
+            Output tensor [1, hidden_dim]
+        """
+        assert forward_batch.forward_mode.is_decode(), "ClusterFusion only supports decode mode"
+        assert hidden_states.shape[0] == 1, "ClusterFusion only supports batch_size=1"
+        
+        # Get weight matrices from layer_weights dict
+        qkv_weight = layer_weights['qkv_weight']  # [hidden_dim, 3 * hidden_dim]
+        o_weight = layer_weights['o_weight']      # [hidden_dim, hidden_dim]
+        rms_weight = layer_weights['rms_weight']  # [hidden_dim]
+        
+        # Get RoPE cos/sin values 
+        cos = layer_weights['cos']  # [head_dim]
+        sin = layer_weights['sin']  # [head_dim]
+        
+        # Get KV cache tensors from memory pool
+        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer_id)
+        
+        # For batch_size=1 decode, get the KV cache slice for current sequence
+        req_indices = forward_batch.req_pool_indices
+        seq_lens = forward_batch.seq_lens
+        
+        req_idx = req_indices[0].item()
+        seq_len = seq_lens[0].item()
+        
+        # Get token indices for the current request 
+        token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len]
+        
+        # Extract continuous KV cache for current sequence
+        # k_cache_full: [size+page_size, num_heads, head_dim]
+        # We need to reshape to [seq_len, hidden_dim] format expected by kernel
+        num_heads = k_cache_full.shape[1]
+        head_dim = k_cache_full.shape[2]
+        hidden_dim = num_heads * head_dim
+        
+        k_cache_seq = k_cache_full[token_indices].view(seq_len, hidden_dim)  # [seq_len, hidden_dim]
+        v_cache_seq = v_cache_full[token_indices].view(seq_len, hidden_dim)  # [seq_len, hidden_dim]
+        
+        # Ensure tensors are contiguous and in correct dtype
+        # hidden_states = hidden_states.contiguous().half()
+        # qkv_weight = qkv_weight.contiguous().half()
+        # o_weight = o_weight.contiguous().half()
+        # rms_weight = rms_weight.contiguous().half()
+        # k_cache_seq = k_cache_seq.contiguous().half()
+        # v_cache_seq = v_cache_seq.contiguous().half()
+        # cos = cos.contiguous().float()
+        # sin = sin.contiguous().float()
+        
+        # Call ClusterFusion fused kernel
+        try:
+            import clusterfusion
+            output, k, v = clusterfusion.llama_decoder_layer(
+                hidden_states,     # [1, hidden_dim] 
+                qkv_weight,        # [hidden_dim, 3 * hidden_dim]
+                o_weight,          # [hidden_dim, hidden_dim]
+                k_cache_seq,       # [seq_len, hidden_dim]
+                v_cache_seq,       # [seq_len, hidden_dim]
+                rms_weight,        # [hidden_dim]
+                cos,               # [head_dim]
+                sin                # [head_dim]
+            )
+        except ImportError:
+            raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")
+        except Exception as e:
+            raise RuntimeError(f"ClusterFusion kernel failed: {e}")
+
+        cache_loc = (
+            forward_batch.out_cache_loc
+        )
+
+        if k is not None:
+            assert v is not None
+            if save_kv_cache:
+                forward_batch.token_to_kv_pool.set_kv_buffer(
+                    None, cache_loc, k, v, 1, 1, layer_id
+                )
+        
+        return output
 
     def _get_wrapper_idx(self, layer: RadixAttention):
         if self.num_wrappers == 1:
@@ -1060,7 +1178,7 @@ class FlashInferMultiStepDraftBackend:
         self.attn_backends = []
         for i in range(self.speculative_num_steps):
             self.attn_backends.append(
-                FlashInferAttnBackend(
+                ClusterFusionBackend(
                     model_runner,
                     skip_prefill=True,
                     kv_indptr_buf=self.kv_indptr[i],
