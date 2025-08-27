@@ -1250,6 +1250,7 @@ class ServerArgs:
             type=str,
             choices=[
                 "aiter",
+                "clusterfusion",
                 "cutlass_mla",
                 "fa3",
                 "flashinfer",
@@ -1267,6 +1268,7 @@ class ServerArgs:
             "--decode-attention-backend",
             type=str,
             choices=[
+                "clusterfusion",
                 "flashinfer",
                 "triton",
                 "torch_native",
@@ -1282,6 +1284,7 @@ class ServerArgs:
             "--prefill-attention-backend",
             type=str,
             choices=[
+                "clusterfusion",
                 "flashinfer",
                 "triton",
                 "torch_native",
