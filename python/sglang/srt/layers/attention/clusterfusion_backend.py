@@ -620,15 +620,9 @@ class ClusterFusionBackend(AttentionBackend):
         head_dim = k_cache_full.shape[2]
         hidden_dim = num_heads * head_dim
         
-        # 检查 token_indices 是否连续，避免不必要的内存复制
-        if token_indices.is_contiguous() and (token_indices == torch.arange(seq_len, device=token_indices.device)).all():
-            # 连续情况：直接使用切片，避免索引复制
-            k_cache_view = k_cache_full[:seq_len].view(seq_len, hidden_dim)
-            v_cache_view = v_cache_full[:seq_len].view(seq_len, hidden_dim)
-        else:
-            # 非连续情况：使用索引，但这会复制内存
-            k_cache_view = k_cache_full[token_indices].view(seq_len, hidden_dim)
-            v_cache_view = v_cache_full[token_indices].view(seq_len, hidden_dim)
+        # TODO: figure out if it is correct
+        k_cache_view = k_cache_full[token_indices].view(seq_len, hidden_dim)
+        v_cache_view = v_cache_full[token_indices].view(seq_len, hidden_dim)
         
         # 获取当前位置用于写入新的 KV
         cache_loc = forward_batch.out_cache_loc
