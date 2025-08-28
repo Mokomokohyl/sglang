@@ -542,20 +542,27 @@ class ClusterFusionBackend(AttentionBackend):
         save_kv_cache=True,
         # ClusterFusion
         clusterfusion_input=None,
-        clusterfusion_weights=None,
+        clusterfusion_qkv_weight=None,
+        clusterfusion_o_weight=None,
+        clusterfusion_rms_weight=None,
+        clusterfusion_cos=None,
+        clusterfusion_sin=None,
         layer_id=None,
         **kwargs
     ):
         if (clusterfusion_input is not None and 
-            clusterfusion_weights is not None and
             forward_batch.forward_mode.is_decode() and 
             clusterfusion_input.shape[0] == 1):
             return self._forward_decode_fused(
                 clusterfusion_input,
-                clusterfusion_weights,
                 forward_batch,
                 layer_id or layer.layer_id,
-                save_kv_cache
+                save_kv_cache,
+                clusterfusion_qkv_weight,
+                clusterfusion_o_weight,
+                clusterfusion_rms_weight,
+                clusterfusion_cos,
+                clusterfusion_sin
             )
 
         else: 
@@ -591,10 +598,14 @@ class ClusterFusionBackend(AttentionBackend):
     def _forward_decode_fused(
         self,
         hidden_states: torch.Tensor,
-        weights_dict: dict,
         forward_batch: ForwardBatch, 
         layer_id: int,
-        save_kv_cache: bool = True
+        save_kv_cache: bool = True,
+        clusterfusion_qkv_weight=None,
+        clusterfusion_o_weight=None,
+        clusterfusion_rms_weight=None,
+        clusterfusion_cos=None,
+        clusterfusion_sin=None,
     ) -> torch.Tensor:
         req_idx = forward_batch.req_pool_indices[0].item()
         seq_len = forward_batch.seq_lens[0].item()
@@ -647,15 +658,16 @@ class ClusterFusionBackend(AttentionBackend):
                 # )
             # except RuntimeError:
             # 如果不需要保存 KV cache，使用原始接口
+            # print(f"hidden_states: {hidden_states.shape}, {hidden_states.is_contiguous()}")
             output, k_new, v_new = clusterfusion.llama_decoder_layer(
                 hidden_states,                    # [1, hidden_dim]
-                weights_dict['qkv_weight'],       # [hidden_dim, 3 * hidden_dim]
-                weights_dict['o_weight'],         # [hidden_dim, hidden_dim]
+                clusterfusion_qkv_weight,       # [hidden_dim, 3 * hidden_dim]
+                clusterfusion_o_weight,         # [hidden_dim, hidden_dim]
                 k_cache_view,                     # [seq_len, hidden_dim]
                 v_cache_view,                     # [seq_len, hidden_dim]
-                weights_dict['rms_weight'],       # [hidden_dim]
-                weights_dict['cos'],              # [head_dim]
-                weights_dict['sin']               # [head_dim]
+                clusterfusion_rms_weight,       # [hidden_dim]
+                clusterfusion_cos,              # [head_dim]
+                clusterfusion_sin               # [head_dim]
             )
             
             if k_new is not None and v_new is not None and save_kv_cache:

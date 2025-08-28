@@ -294,9 +294,9 @@ class LlamaDecoderLayer(nn.Module):
 
         if not hasattr(self, '_clusterfusion_weights_cache'):
             self._clusterfusion_weights_cache = {
-                'qkv_weight': self.self_attn.qkv_proj.weight.t().contiguous(),
-                'o_weight': self.self_attn.o_proj.weight,  # 不需要额外的 contiguous
-                'rms_weight': self.input_layernorm.weight,  # 不需要额外的 contiguous
+                'qkv_weight': self.self_attn.qkv_proj.weight.contiguous(),
+                'o_weight': self.self_attn.o_proj.weight,
+                'rms_weight': self.input_layernorm.weight,
             }
             
             head_dim = self.self_attn.head_dim
@@ -312,8 +312,8 @@ class LlamaDecoderLayer(nn.Module):
         head_dim = self.self_attn.head_dim
         
         layer_weights = self._clusterfusion_weights_cache.copy()
-        layer_weights['cos'] = cos[:head_dim]
-        layer_weights['sin'] = sin[:head_dim]
+        layer_weights['cos'] = torch.cat([cos, cos], dim=0)
+        layer_weights['sin'] = torch.cat([sin, sin], dim=0)
         
         # Call the fused kernel through the backend
         hidden_states = forward_batch.attn_backend.forward_decode(
@@ -324,7 +324,11 @@ class LlamaDecoderLayer(nn.Module):
             forward_batch,
             # ClusterFusion
             clusterfusion_input=hidden_states,
-            clusterfusion_weights=layer_weights,
+            clusterfusion_qkv_weight=self.self_attn.qkv_proj.weight.contiguous(),
+            clusterfusion_o_weight=self.self_attn.o_proj.weight,
+            clusterfusion_rms_weight=self.input_layernorm.weight,
+            clusterfusion_cos=torch.cat([cos, cos], dim=0),
+            clusterfusion_sin=torch.cat([sin, sin], dim=0),
             layer_id=self.self_attn.attn.layer_id
         )
         
