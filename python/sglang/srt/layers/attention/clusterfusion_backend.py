@@ -623,36 +623,24 @@ class ClusterFusionBackend(AttentionBackend):
         # TODO: figure out if it is correct
         k_cache_view = k_cache_full[token_indices].view(seq_len, hidden_dim)
         v_cache_view = v_cache_full[token_indices].view(seq_len, hidden_dim)
-        
+
         # 获取当前位置用于写入新的 KV
         cache_loc = forward_batch.out_cache_loc
-        current_token_idx = cache_loc[0].item() if save_kv_cache else -1
         
         # 调用 ClusterFusion kernel
         try:
             import clusterfusion
             
-            # try:
-                # # 如果需要保存 KV cache，直接传入写入位置，让 kernel 直接写入
-                # # 这样避免了返回大的 tensor 再复制的开销
-                # output = clusterfusion.llama_decoder_layer_inplace(
-                    # hidden_states,                    # [1, hidden_dim]
-                    # weights_dict['qkv_weight'],       # [hidden_dim, 3 * hidden_dim]
-                    # weights_dict['o_weight'],         # [hidden_dim, hidden_dim]
-                    # k_cache_view,                     # [seq_len, hidden_dim] - 历史 KV
-                    # v_cache_view,                     # [seq_len, hidden_dim] - 历史 KV
-                    # k_cache_full,                     # 完整的 K cache 用于写入
-                    # v_cache_full,                     # 完整的 V cache 用于写入
-                    # current_token_idx,                # 写入位置
-                    # weights_dict['rms_weight'],       # [hidden_dim]
-                    # weights_dict['cos'],              # [head_dim]
-                    # weights_dict['sin'],              # [head_dim]
-                    # num_heads,                        # 用于正确的 reshape
-                    # head_dim
-                # )
-            # except RuntimeError:
-            # 如果不需要保存 KV cache，使用原始接口
-            # print(f"hidden_states: {hidden_states.shape}, {hidden_states.is_contiguous()}")
+            debug = False
+            if debug:
+                print(f"hidden_states: {hidden_states.shape}, {hidden_states.is_contiguous()}, {hidden_states.dtype}")
+                print(f"clusterfusion_qkv_weight: {clusterfusion_qkv_weight.shape}, {clusterfusion_qkv_weight.is_contiguous()}, {clusterfusion_qkv_weight.dtype}")
+                print(f"clusterfusion_o_weight: {clusterfusion_o_weight.shape}, {clusterfusion_o_weight.is_contiguous()}, {clusterfusion_o_weight.dtype}")
+                print(f"k_cache_view: {k_cache_view.shape}, {k_cache_view.is_contiguous()}, {k_cache_view.dtype}")
+                print(f"v_cache_view: {v_cache_view.shape}, {v_cache_view.is_contiguous()}, {v_cache_view.dtype}")
+                print(f"clusterfusion_rms_weight: {clusterfusion_rms_weight.shape}, {clusterfusion_rms_weight.is_contiguous()}, {clusterfusion_rms_weight.dtype}")
+                print(f"clusterfusion_cos: {clusterfusion_cos.shape}, {clusterfusion_cos.is_contiguous()}, {clusterfusion_cos.dtype}")
+                print(f"clusterfusion_sin: {clusterfusion_sin.shape}, {clusterfusion_sin.is_contiguous()}, {clusterfusion_sin.dtype}")
             output, k_new, v_new = clusterfusion.llama_decoder_layer(
                 hidden_states,                    # [1, hidden_dim]
                 clusterfusion_qkv_weight,       # [hidden_dim, 3 * hidden_dim]
@@ -663,17 +651,11 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_cos,              # [head_dim]
                 clusterfusion_sin               # [head_dim]
             )
-            
-            if k_new is not None and v_new is not None and save_kv_cache:
-                # 使用就地操作避免额外内存分配
-                k_new_reshaped = k_new.view(num_heads, head_dim)
-                v_new_reshaped = v_new.view(num_heads, head_dim)
-                
-                k_cache_full[current_token_idx].copy_(k_new_reshaped)
-                v_cache_full[current_token_idx].copy_(v_new_reshaped)
-                
-                # 立即删除临时张量释放内存
-                del k_new, v_new, k_new_reshaped, v_new_reshaped
+
+            if save_kv_cache:
+                forward_batch.token_to_kv_pool.set_kv_buffer(
+                    None, cache_loc, k_new, v_new, 1, 1, layer_id_override=layer_id
+                )
                 
         except ImportError:
             raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")

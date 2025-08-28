@@ -292,28 +292,9 @@ class LlamaDecoderLayer(nn.Module):
         if residual is None:
             residual = hidden_states
 
-        if not hasattr(self, '_clusterfusion_weights_cache'):
-            self._clusterfusion_weights_cache = {
-                'qkv_weight': self.self_attn.qkv_proj.weight.contiguous(),
-                'o_weight': self.self_attn.o_proj.weight,
-                'rms_weight': self.input_layernorm.weight,
-            }
-            
-            head_dim = self.self_attn.head_dim
-            device = hidden_states.device
-            dtype = hidden_states.dtype
-            self._cos_buffer = torch.zeros(head_dim, dtype=dtype, device=device)
-            self._sin_buffer = torch.zeros(head_dim, dtype=dtype, device=device)
-
         pos_idx = positions[0].item() if positions.numel() > 0 else 0
         cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
         cos, sin = cos_sin.chunk(2, dim=-1)
-        
-        head_dim = self.self_attn.head_dim
-        
-        layer_weights = self._clusterfusion_weights_cache.copy()
-        layer_weights['cos'] = torch.cat([cos, cos], dim=0)
-        layer_weights['sin'] = torch.cat([sin, sin], dim=0)
         
         # Call the fused kernel through the backend
         hidden_states = forward_batch.attn_backend.forward_decode(
