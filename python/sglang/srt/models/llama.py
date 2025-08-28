@@ -249,25 +249,34 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor],
+        **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Self Attention
-        if residual is None:
-            residual = hidden_states
-            hidden_states = self.input_layernorm(hidden_states)
+
+        use_clusterfusion = kwargs.get('use_clusterfusion', False)
+        
+        if use_clusterfusion and forward_batch.forward_mode.is_decode() and hidden_states.shape[0] == 1:
+            return self._forward_clusterfusion(
+                positions, hidden_states, forward_batch, residual
+            )
         else:
-            hidden_states, residual = self.input_layernorm(hidden_states, residual)
-        hidden_states = self.self_attn(
-            positions=positions,
-            hidden_states=hidden_states,
-            forward_batch=forward_batch,
-        )
+            # Self Attention
+            if residual is None:
+                residual = hidden_states
+                hidden_states = self.input_layernorm(hidden_states)
+            else:
+                hidden_states, residual = self.input_layernorm(hidden_states, residual)
+            hidden_states = self.self_attn(
+                positions=positions,
+                hidden_states=hidden_states,
+                forward_batch=forward_batch,
+            )
 
-        # Fully Connected
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
-        return hidden_states, residual
+            # Fully Connected
+            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+            hidden_states = self.mlp(hidden_states)
+            return hidden_states, residual
 
-    def forward_clusterfusion(
+    def _forward_clusterfusion(
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
@@ -282,45 +291,41 @@ class LlamaDecoderLayer(nn.Module):
         # Handle residual connection
         if residual is None:
             residual = hidden_states
-        
-        # Prepare layer weights for the fused kernel
-        layer_weights = {
-            'qkv_weight': self.self_attn.qkv_proj.weight.t().contiguous(),  # [hidden_dim, 3*hidden_dim]
-            'o_weight': self.self_attn.o_proj.weight.contiguous(),          # [hidden_dim, hidden_dim] 
-            'rms_weight': self.input_layernorm.weight.contiguous(),         # [hidden_dim]
-        }
-        
-        # Get RoPE cos/sin values for the current position
-        # cos_sin_cache: [max_position_embeddings, rotary_dim * 2]
-        # positions: [batch_size] - for decode mode, batch_size = 1
+
+        if not hasattr(self, '_clusterfusion_weights_cache'):
+            self._clusterfusion_weights_cache = {
+                'qkv_weight': self.self_attn.qkv_proj.weight.t().contiguous(),
+                'o_weight': self.self_attn.o_proj.weight,  # 不需要额外的 contiguous
+                'rms_weight': self.input_layernorm.weight,  # 不需要额外的 contiguous
+            }
+            
+            head_dim = self.self_attn.head_dim
+            device = hidden_states.device
+            dtype = hidden_states.dtype
+            self._cos_buffer = torch.zeros(head_dim, dtype=dtype, device=device)
+            self._sin_buffer = torch.zeros(head_dim, dtype=dtype, device=device)
+
         pos_idx = positions[0].item() if positions.numel() > 0 else 0
-        cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]  # [rotary_dim * 2]
-        cos, sin = cos_sin.chunk(2, dim=-1)  # Each: [rotary_dim]
+        cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
+        cos, sin = cos_sin.chunk(2, dim=-1)
         
-        # For ClusterFusion kernel, we need full head_dim (128) values
-        # If rotary_dim < head_dim, we pad with zeros
         head_dim = self.self_attn.head_dim
-        rotary_dim = self.self_attn.rotary_dim
         
-        if rotary_dim < head_dim:
-            # Pad cos and sin to head_dim
-            cos_padded = torch.zeros(head_dim, dtype=cos.dtype, device=cos.device)
-            sin_padded = torch.zeros(head_dim, dtype=sin.dtype, device=sin.device)
-            cos_padded[:rotary_dim] = cos
-            sin_padded[:rotary_dim] = sin
-            layer_weights['cos'] = cos_padded.contiguous()
-            layer_weights['sin'] = sin_padded.contiguous()
-        else:
-            layer_weights['cos'] = cos[:head_dim].contiguous()
-            layer_weights['sin'] = sin[:head_dim].contiguous()
+        layer_weights = self._clusterfusion_weights_cache.copy()
+        layer_weights['cos'] = cos[:head_dim]
+        layer_weights['sin'] = sin[:head_dim]
         
         # Call the fused kernel through the backend
-        hidden_states = forward_batch.attn_backend.forward_decode_fused(
-            hidden_states,
-            layer_weights,
-            positions,
+        hidden_states = forward_batch.attn_backend.forward_decode(
+            torch.zeros(0),
+            torch.zeros(0),
+            torch.zeros(0),
+            self.self_attn.attn,
             forward_batch,
-            self.self_attn.attn.layer_id
+            # ClusterFusion
+            clusterfusion_input=hidden_states,
+            clusterfusion_weights=layer_weights,
+            layer_id=self.self_attn.attn.layer_id
         )
         
         # Fully Connected
@@ -386,40 +391,26 @@ class LlamaModel(nn.Module):
             # FIXME(@ying): reduce the number of proxy tensors by not fusing layer norms
             hidden_states = pp_proxy_tensors["hidden_states"]
             residual = pp_proxy_tensors["residual"]
-            deferred_norm = None
 
         aux_hidden_states = []
+        # Check if using ClusterFusion backend for fused kernel
+        use_clusterfusion = (
+            forward_batch.attn_backend.__class__.__name__ == 'ClusterFusionBackend' and
+            forward_batch.forward_mode.is_decode() and
+            hidden_states.shape[0] == 1  # batch_size = 1
+        )
         for i in range(self.start_layer, self.end_layer):
             if i in self.layers_to_capture:
                 aux_hidden_states.append(hidden_states + residual)
             layer = self.layers[i]
             
-            # Check if using ClusterFusion backend for fused kernel
-            use_clusterfusion = (
-                hasattr(layer, 'self_attn') and 
-                hasattr(layer.self_attn, 'attn') and
-                forward_batch.attn_backend.__class__.__name__ == 'ClusterFusionBackend' and
-                forward_batch.forward_mode.is_decode() and
-                hidden_states.shape[0] == 1  # batch_size = 1
+            hidden_states, residual = layer(
+                positions,
+                hidden_states,
+                forward_batch,
+                residual,
+                use_clusterfusion=use_clusterfusion
             )
-            print(use_clusterfusion)
-            
-            if use_clusterfusion and hasattr(layer, 'forward_clusterfusion'):
-                # Use ClusterFusion fused kernel
-                hidden_states, residual = layer.forward_clusterfusion(
-                    positions,
-                    hidden_states,
-                    forward_batch,
-                    residual,
-                )
-            else:
-                # Use standard forward path
-                hidden_states, residual = layer(
-                    positions,
-                    hidden_states,
-                    forward_batch,
-                    residual,
-                )
 
         if not self.pp_group.is_last_rank:
             return PPProxyTensors(
@@ -519,11 +510,6 @@ class LlamaForCausalLM(nn.Module):
 
         self.capture_aux_hidden_states = False
 
-        self.use_clusterfusion = False
-        if self.use_clusterfusion:
-            self._forward_vanilla = self.forward
-            self.forward = MethodType(LlamaForCausalLM.forward_clusterfusion, self)
-
     def _init_model(
         self,
         config: LlamaConfig,
@@ -542,43 +528,6 @@ class LlamaForCausalLM(nn.Module):
         get_embedding: bool = False,
         pp_proxy_tensors: Optional[PPProxyTensors] = None,
     ) -> LogitsProcessorOutput:
-        hidden_states = self.model(
-            input_ids,
-            positions,
-            forward_batch,
-            input_embeds,
-            pp_proxy_tensors=pp_proxy_tensors,
-        )
-
-        aux_hidden_states = None
-        if self.capture_aux_hidden_states:
-            hidden_states, aux_hidden_states = hidden_states
-
-        if self.pp_group.is_last_rank:
-            if not get_embedding:
-                return self.logits_processor(
-                    input_ids,
-                    hidden_states,
-                    self.lm_head,
-                    forward_batch,
-                    aux_hidden_states,
-                )
-            else:
-                return self.pooler(hidden_states, forward_batch)
-        else:
-            return hidden_states
-
-    @torch.no_grad()
-    def forward_clusterfusion(
-        self,
-        input_ids: torch.Tensor,
-        positions: torch.Tensor,
-        forward_batch: ForwardBatch,
-        input_embeds: torch.Tensor = None,
-        get_embedding: bool = False,
-        pp_proxy_tensors: Optional[PPProxyTensors] = None,
-    ) -> LogitsProcessorOutput:
-        # TODO: rewrite to enable clusterfusion kernel
         hidden_states = self.model(
             input_ids,
             positions,

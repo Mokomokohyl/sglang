@@ -540,150 +540,139 @@ class ClusterFusionBackend(AttentionBackend):
         layer: RadixAttention,
         forward_batch: ForwardBatch,
         save_kv_cache=True,
+        # ClusterFusion
+        clusterfusion_input=None,
+        clusterfusion_weights=None,
+        layer_id=None,
+        **kwargs
     ):
-        # Check if we should use ClusterFusion fused kernel
-        # Only for batch_size=1 decode mode
-        use_fused_kernel = (
+        if (clusterfusion_input is not None and 
+            clusterfusion_weights is not None and
             forward_batch.forward_mode.is_decode() and 
-            q.shape[0] == 1 and
-            hasattr(forward_batch, '_use_clusterfusion_kernel') and
-            forward_batch._use_clusterfusion_kernel
-        )
-        
-        if use_fused_kernel:
-            # Use ClusterFusion fused kernel - delegate to the model layer
-            # The fused kernel handles RMSNorm + Attention + Output projection
-            # This method should not be called directly when using fused kernel
-            # Instead, the model layer's forward_clusterfusion should be called
-            raise RuntimeError(
-                "forward_decode should not be called directly when using ClusterFusion fused kernel. "
-                "Use the model layer's forward_clusterfusion method instead."
+            clusterfusion_input.shape[0] == 1):
+            return self._forward_decode_fused(
+                clusterfusion_input,
+                clusterfusion_weights,
+                forward_batch,
+                layer_id or layer.layer_id,
+                save_kv_cache
             )
-        
-        # Standard FlashInfer path
-        decode_wrapper = self.forward_metadata.decode_wrappers[
-            self._get_wrapper_idx(layer)
-        ]
-        cache_loc = (
-            forward_batch.out_cache_loc
-            if not layer.is_cross_attention
-            else forward_batch.encoder_out_cache_loc
-        )
 
-        if k is not None:
-            assert v is not None
-            if save_kv_cache:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
-                    layer, cache_loc, k, v, layer.k_scale, layer.v_scale
-                )
+        else: 
+            # Standard FlashInfer path
+            decode_wrapper = self.forward_metadata.decode_wrappers[
+                self._get_wrapper_idx(layer)
+            ]
+            cache_loc = (
+                forward_batch.out_cache_loc
+                if not layer.is_cross_attention
+                else forward_batch.encoder_out_cache_loc
+            )
 
-        # Call the wrapped function
-        o = decode_wrapper.forward(
-            q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
-            forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id),
-            sm_scale=layer.scaling,
-            logits_soft_cap=layer.logit_cap,
-            k_scale=layer.k_scale,
-            v_scale=layer.v_scale,
-        )
+            if k is not None:
+                assert v is not None
+                if save_kv_cache:
+                    forward_batch.token_to_kv_pool.set_kv_buffer(
+                        layer, cache_loc, k, v, layer.k_scale, layer.v_scale
+                    )
 
-        return o.view(-1, layer.tp_q_head_num * layer.head_dim)
+            # Call the wrapped function
+            o = decode_wrapper.forward(
+                q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
+                forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id),
+                sm_scale=layer.scaling,
+                logits_soft_cap=layer.logit_cap,
+                k_scale=layer.k_scale,
+                v_scale=layer.v_scale,
+            )
 
-    def forward_decode_fused(
+            return o.view(-1, layer.tp_q_head_num * layer.head_dim)
+
+    def _forward_decode_fused(
         self,
         hidden_states: torch.Tensor,
-        layer_weights: dict,
-        positions: torch.Tensor,
-        forward_batch: ForwardBatch,
+        weights_dict: dict,
+        forward_batch: ForwardBatch, 
         layer_id: int,
-        save_kv_cache = True,
+        save_kv_cache: bool = True
     ) -> torch.Tensor:
-        """
-        Forward pass using ClusterFusion fused kernel for batch_size=1 decode.
+        req_idx = forward_batch.req_pool_indices[0].item()
+        seq_len = forward_batch.seq_lens[0].item()
         
-        Args:
-            hidden_states: Input hidden states [1, hidden_dim]
-            layer_weights: Dictionary containing all layer weights
-            positions: Position indices for RoPE
-            forward_batch: Forward batch information
-            layer_id: Current layer ID
-            
-        Returns:
-            Output tensor [1, hidden_dim]
-        """
-        assert forward_batch.forward_mode.is_decode(), "ClusterFusion only supports decode mode"
-        assert hidden_states.shape[0] == 1, "ClusterFusion only supports batch_size=1"
-        
-        # Get weight matrices from layer_weights dict
-        qkv_weight = layer_weights['qkv_weight']  # [hidden_dim, 3 * hidden_dim]
-        o_weight = layer_weights['o_weight']      # [hidden_dim, hidden_dim]
-        rms_weight = layer_weights['rms_weight']  # [hidden_dim]
-        
-        # Get RoPE cos/sin values 
-        cos = layer_weights['cos']  # [head_dim]
-        sin = layer_weights['sin']  # [head_dim]
-        
-        # Get KV cache tensors from memory pool
-        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer_id)
-        
-        # For batch_size=1 decode, get the KV cache slice for current sequence
-        req_indices = forward_batch.req_pool_indices
-        seq_lens = forward_batch.seq_lens
-        
-        req_idx = req_indices[0].item()
-        seq_len = seq_lens[0].item()
-        
-        # Get token indices for the current request 
+        # 获取 token indices，避免不必要的复制
         token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len]
         
-        # Extract continuous KV cache for current sequence
-        # k_cache_full: [size+page_size, num_heads, head_dim]
-        # We need to reshape to [seq_len, hidden_dim] format expected by kernel
+        # 获取 KV cache 缓冲区
+        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer_id)
+        
         num_heads = k_cache_full.shape[1]
         head_dim = k_cache_full.shape[2]
         hidden_dim = num_heads * head_dim
         
-        k_cache_seq = k_cache_full[token_indices].view(seq_len, hidden_dim)  # [seq_len, hidden_dim]
-        v_cache_seq = v_cache_full[token_indices].view(seq_len, hidden_dim)  # [seq_len, hidden_dim]
+        # 检查 token_indices 是否连续，避免不必要的内存复制
+        if token_indices.is_contiguous() and (token_indices == torch.arange(seq_len, device=token_indices.device)).all():
+            # 连续情况：直接使用切片，避免索引复制
+            k_cache_view = k_cache_full[:seq_len].view(seq_len, hidden_dim)
+            v_cache_view = v_cache_full[:seq_len].view(seq_len, hidden_dim)
+        else:
+            # 非连续情况：使用索引，但这会复制内存
+            k_cache_view = k_cache_full[token_indices].view(seq_len, hidden_dim)
+            v_cache_view = v_cache_full[token_indices].view(seq_len, hidden_dim)
         
-        # Ensure tensors are contiguous and in correct dtype
-        # hidden_states = hidden_states.contiguous().half()
-        # qkv_weight = qkv_weight.contiguous().half()
-        # o_weight = o_weight.contiguous().half()
-        # rms_weight = rms_weight.contiguous().half()
-        # k_cache_seq = k_cache_seq.contiguous().half()
-        # v_cache_seq = v_cache_seq.contiguous().half()
-        # cos = cos.contiguous().float()
-        # sin = sin.contiguous().float()
+        # 获取当前位置用于写入新的 KV
+        cache_loc = forward_batch.out_cache_loc
+        current_token_idx = cache_loc[0].item() if save_kv_cache else -1
         
-        # Call ClusterFusion fused kernel
+        # 调用 ClusterFusion kernel
         try:
             import clusterfusion
-            output, k, v = clusterfusion.llama_decoder_layer(
-                hidden_states,     # [1, hidden_dim] 
-                qkv_weight,        # [hidden_dim, 3 * hidden_dim]
-                o_weight,          # [hidden_dim, hidden_dim]
-                k_cache_seq,       # [seq_len, hidden_dim]
-                v_cache_seq,       # [seq_len, hidden_dim]
-                rms_weight,        # [hidden_dim]
-                cos,               # [head_dim]
-                sin                # [head_dim]
+            
+            # try:
+                # # 如果需要保存 KV cache，直接传入写入位置，让 kernel 直接写入
+                # # 这样避免了返回大的 tensor 再复制的开销
+                # output = clusterfusion.llama_decoder_layer_inplace(
+                    # hidden_states,                    # [1, hidden_dim]
+                    # weights_dict['qkv_weight'],       # [hidden_dim, 3 * hidden_dim]
+                    # weights_dict['o_weight'],         # [hidden_dim, hidden_dim]
+                    # k_cache_view,                     # [seq_len, hidden_dim] - 历史 KV
+                    # v_cache_view,                     # [seq_len, hidden_dim] - 历史 KV
+                    # k_cache_full,                     # 完整的 K cache 用于写入
+                    # v_cache_full,                     # 完整的 V cache 用于写入
+                    # current_token_idx,                # 写入位置
+                    # weights_dict['rms_weight'],       # [hidden_dim]
+                    # weights_dict['cos'],              # [head_dim]
+                    # weights_dict['sin'],              # [head_dim]
+                    # num_heads,                        # 用于正确的 reshape
+                    # head_dim
+                # )
+            # except RuntimeError:
+            # 如果不需要保存 KV cache，使用原始接口
+            output, k_new, v_new = clusterfusion.llama_decoder_layer(
+                hidden_states,                    # [1, hidden_dim]
+                weights_dict['qkv_weight'],       # [hidden_dim, 3 * hidden_dim]
+                weights_dict['o_weight'],         # [hidden_dim, hidden_dim]
+                k_cache_view,                     # [seq_len, hidden_dim]
+                v_cache_view,                     # [seq_len, hidden_dim]
+                weights_dict['rms_weight'],       # [hidden_dim]
+                weights_dict['cos'],              # [head_dim]
+                weights_dict['sin']               # [head_dim]
             )
+            
+            if k_new is not None and v_new is not None and save_kv_cache:
+                # 使用就地操作避免额外内存分配
+                k_new_reshaped = k_new.view(num_heads, head_dim)
+                v_new_reshaped = v_new.view(num_heads, head_dim)
+                
+                k_cache_full[current_token_idx].copy_(k_new_reshaped)
+                v_cache_full[current_token_idx].copy_(v_new_reshaped)
+                
+                # 立即删除临时张量释放内存
+                del k_new, v_new, k_new_reshaped, v_new_reshaped
+                
         except ImportError:
             raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")
         except Exception as e:
             raise RuntimeError(f"ClusterFusion kernel failed: {e}")
-
-        cache_loc = (
-            forward_batch.out_cache_loc
-        )
-
-        if k is not None:
-            assert v is not None
-            if save_kv_cache:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
-                    None, cache_loc, k, v, 1, 1, layer_id
-                )
         
         return output
 
