@@ -556,7 +556,7 @@ class ClusterFusionBackend(AttentionBackend):
             return self._forward_decode_fused(
                 clusterfusion_input,
                 forward_batch,
-                layer_id or layer.layer_id,
+                layer,
                 save_kv_cache,
                 clusterfusion_qkv_weight,
                 clusterfusion_o_weight,
@@ -599,7 +599,7 @@ class ClusterFusionBackend(AttentionBackend):
         self,
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch, 
-        layer_id: int,
+        layer: RadixAttention,
         save_kv_cache: bool = True,
         clusterfusion_qkv_weight=None,
         clusterfusion_o_weight=None,
@@ -611,28 +611,43 @@ class ClusterFusionBackend(AttentionBackend):
         seq_len = forward_batch.seq_lens[0].item()
         
         # 获取 token indices，避免不必要的复制
-        token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len]
+        token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len-1]
+
+        # 获取当前位置用于写入新的 KV
+        cache_loc = forward_batch.out_cache_loc
+
+        if layer.layer_id == 0:
+            print(f"=== ClusterFusion Debug Layer {layer.layer_id} ===")
+            print(f"req_idx: {req_idx}")
+            print(f"seq_len: {seq_len}")
+            print(f"forward_batch.req_pool_indices: {forward_batch.req_pool_indices}")
+            print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
+            print(f"cache_loc (out_cache_loc): {cache_loc}")
+            print(f"token_indices: {token_indices}")
+            print(f"token_indices shape: {token_indices.shape}")
+            # 添加sliding window调试信息
+            print(f"layer.sliding_window_size: {getattr(layer, 'sliding_window_size', 'N/A')}")
+            print(f"Backend dispatch_reason: {getattr(self, 'dispatch_reason', 'N/A')}")
+            if hasattr(forward_batch, 'req_to_token_pool'):
+                print(f"req_to_token_pool free_slots count: {len(forward_batch.req_to_token_pool.free_slots)}")
+            print("=== End Debug ===")
         
         # 获取 KV cache 缓冲区
-        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer_id)
+        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
         
         num_heads = k_cache_full.shape[1]
         head_dim = k_cache_full.shape[2]
         hidden_dim = num_heads * head_dim
         
-        # TODO: figure out if it is correct
-        k_cache_view = k_cache_full[token_indices].view(seq_len, hidden_dim)
-        v_cache_view = v_cache_full[token_indices].view(seq_len, hidden_dim)
+        k_cache_view = k_cache_full[token_indices].view(seq_len-1, hidden_dim)
+        v_cache_view = v_cache_full[token_indices].view(seq_len-1, hidden_dim)
 
-        # 获取当前位置用于写入新的 KV
-        cache_loc = forward_batch.out_cache_loc
-        
         # 调用 ClusterFusion kernel
         try:
             import clusterfusion
             
-            debug = False
-            if debug:
+            debug = True
+            if debug and layer.layer_id == 0:
                 print(f"hidden_states: {hidden_states.shape}, {hidden_states.is_contiguous()}, {hidden_states.dtype}")
                 print(f"clusterfusion_qkv_weight: {clusterfusion_qkv_weight.shape}, {clusterfusion_qkv_weight.is_contiguous()}, {clusterfusion_qkv_weight.dtype}")
                 print(f"clusterfusion_o_weight: {clusterfusion_o_weight.shape}, {clusterfusion_o_weight.is_contiguous()}, {clusterfusion_o_weight.dtype}")
@@ -643,7 +658,7 @@ class ClusterFusionBackend(AttentionBackend):
                 print(f"clusterfusion_sin: {clusterfusion_sin.shape}, {clusterfusion_sin.is_contiguous()}, {clusterfusion_sin.dtype}")
             output, k_new, v_new = clusterfusion.llama_decoder_layer(
                 hidden_states,                    # [1, hidden_dim]
-                clusterfusion_qkv_weight,       # [hidden_dim, 3 * hidden_dim]
+                clusterfusion_qkv_weight,       # [3 * hidden_dim, hidden_dim]
                 clusterfusion_o_weight,         # [hidden_dim, hidden_dim]
                 k_cache_view,                     # [seq_len, hidden_dim]
                 v_cache_view,                     # [seq_len, hidden_dim]
@@ -654,7 +669,7 @@ class ClusterFusionBackend(AttentionBackend):
 
             if save_kv_cache:
                 forward_batch.token_to_kv_pool.set_kv_buffer(
-                    None, cache_loc, k_new, v_new, 1, 1, layer_id_override=layer_id
+                    layer, cache_loc, k_new, v_new, layer.k_scale, layer.v_scale
                 )
                 
         except ImportError:

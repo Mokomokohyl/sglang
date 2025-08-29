@@ -255,6 +255,9 @@ class LlamaDecoderLayer(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         use_clusterfusion = kwargs.get('use_clusterfusion', False)
+
+        if self.self_attn.attn.layer_id == 0:
+            print(f"positions[0].item(): {positions[0].item()}")
         
         if use_clusterfusion and forward_batch.forward_mode.is_decode() and hidden_states.shape[0] == 1:
             return self._forward_clusterfusion(
@@ -294,6 +297,8 @@ class LlamaDecoderLayer(nn.Module):
         if residual is None:
             residual = hidden_states
 
+        if self.self_attn.attn.layer_id == 0:
+            print(f"positions[0].item(): {positions[0].item()}")
         pos_idx = positions[0].item() if positions.numel() > 0 else 0
         cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
         cos, sin = cos_sin.chunk(2, dim=-1)
