@@ -243,6 +243,8 @@ class LlamaDecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
 
+        self.clusterfusion_qkv_weight = None
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -295,6 +297,31 @@ class LlamaDecoderLayer(nn.Module):
         pos_idx = positions[0].item() if positions.numel() > 0 else 0
         cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
         cos, sin = cos_sin.chunk(2, dim=-1)
+
+        if (self.clusterfusion_qkv_weight is None):
+            # 获取QKV权重并重新组织
+            qkv_weight = self.self_attn.qkv_proj.weight  # [12288, 4096]
+            
+            # 计算每个子矩阵的大小
+            num_heads = self.self_attn.num_heads
+            num_kv_heads = self.self_attn.num_kv_heads  
+            head_dim = self.self_attn.head_dim
+            
+            q_size = num_heads * head_dim      # 4096
+            kv_size = num_kv_heads * head_dim  # 4096
+            
+            # 分片取出Q、K、V权重
+            q_weight = qkv_weight[:q_size, :]                    # [4096, 4096]
+            k_weight = qkv_weight[q_size:q_size+kv_size, :]     # [4096, 4096]  
+            v_weight = qkv_weight[q_size+kv_size:, :]           # [4096, 4096]
+            
+            # 转置每个子矩阵以匹配kernel期望格式
+            q_weight_t = q_weight.t().contiguous()  # [4096, 4096] -> [4096, 4096]
+            k_weight_t = k_weight.t().contiguous()  # [4096, 4096] -> [4096, 4096]
+            v_weight_t = v_weight.t().contiguous()  # [4096, 4096] -> [4096, 4096]
+            
+            # 重新拼接为kernel期望的格式 [3*hidden_dim, hidden_dim]
+            self.clusterfusion_qkv_weight = torch.cat([q_weight_t, k_weight_t, v_weight_t], dim=0)
         
         # Call the fused kernel through the backend
         hidden_states = forward_batch.attn_backend.forward_decode(
@@ -305,7 +332,7 @@ class LlamaDecoderLayer(nn.Module):
             forward_batch,
             # ClusterFusion
             clusterfusion_input=hidden_states,
-            clusterfusion_qkv_weight=self.self_attn.qkv_proj.weight.contiguous(),
+            clusterfusion_qkv_weight=self.clusterfusion_qkv_weight,
             clusterfusion_o_weight=self.self_attn.o_proj.weight,
             clusterfusion_rms_weight=self.input_layernorm.weight,
             clusterfusion_cos=torch.cat([cos, cos], dim=0),
