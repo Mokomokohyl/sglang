@@ -549,30 +549,6 @@ class FlashInferAttnBackend(AttentionBackend):
             else forward_batch.encoder_out_cache_loc
         )
 
-        if layer.layer_id == 0:
-            req_idx = forward_batch.req_pool_indices[0].item()
-            seq_len = forward_batch.seq_lens[0].item()
-            
-            # 获取 token indices，避免不必要的复制
-            token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len-1]
-
-            # 获取当前位置用于写入新的 KV
-            cache_loc = forward_batch.out_cache_loc
-            print(f"=== ClusterFusion Debug Layer {layer.layer_id} ===")
-            print(f"req_idx: {req_idx}")
-            print(f"seq_len: {seq_len}")
-            print(f"forward_batch.req_pool_indices: {forward_batch.req_pool_indices}")
-            print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
-            print(f"cache_loc (out_cache_loc): {cache_loc}")
-            print(f"token_indices: {token_indices}")
-            print(f"token_indices shape: {token_indices.shape}")
-            # 添加sliding window调试信息
-            print(f"layer.sliding_window_size: {getattr(layer, 'sliding_window_size', 'N/A')}")
-            print(f"Backend dispatch_reason: {getattr(self, 'dispatch_reason', 'N/A')}")
-            if hasattr(forward_batch, 'req_to_token_pool'):
-                print(f"req_to_token_pool free_slots count: {len(forward_batch.req_to_token_pool.free_slots)}")
-            print("=== End Debug ===")
-
         if k is not None:
             assert v is not None
             if save_kv_cache:
