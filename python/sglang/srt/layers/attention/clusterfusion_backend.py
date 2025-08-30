@@ -547,6 +547,7 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_qkv_weight=None,
         clusterfusion_o_weight=None,
         clusterfusion_rms_weight=None,
+        clusterfusion_eps=None,
         clusterfusion_cos=None,
         clusterfusion_sin=None,
         layer_id=None,
@@ -564,6 +565,7 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_qkv_weight,
                 clusterfusion_o_weight,
                 clusterfusion_rms_weight,
+                clusterfusion_eps,
                 clusterfusion_cos,
                 clusterfusion_sin
             )
@@ -608,6 +610,7 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_qkv_weight=None,
         clusterfusion_o_weight=None,
         clusterfusion_rms_weight=None,
+        clusterfusion_eps=None,
         clusterfusion_cos=None,
         clusterfusion_sin=None,
     ) -> torch.Tensor:
@@ -620,22 +623,19 @@ class ClusterFusionBackend(AttentionBackend):
         # 获取当前位置用于写入新的 KV
         cache_loc = forward_batch.out_cache_loc
 
-        if layer.layer_id == 0:
-            print(f"=== ClusterFusion Debug Layer {layer.layer_id} ===")
-            print(f"req_idx: {req_idx}")
-            print(f"seq_len: {seq_len}")
-            print(f"forward_batch.req_pool_indices: {forward_batch.req_pool_indices}")
-            print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
-            print(f"cache_loc (out_cache_loc): {cache_loc}")
-            print(f"token_indices: {token_indices}")
-            print(f"token_indices shape: {token_indices.shape}")
-            # 添加sliding window调试信息
-            print(f"layer.sliding_window_size: {getattr(layer, 'sliding_window_size', 'N/A')}")
-            print(f"Backend dispatch_reason: {getattr(self, 'dispatch_reason', 'N/A')}")
-            if hasattr(forward_batch, 'req_to_token_pool'):
-                print(f"req_to_token_pool free_slots count: {len(forward_batch.req_to_token_pool.free_slots)}")
-            print("=== End Debug ===")
-        print(f"layer.layer_id: {layer.layer_id}")
+        #if layer.layer_id == 0:
+            #print(f"req_idx: {req_idx}")
+            #print(f"seq_len: {seq_len}")
+            #print(f"forward_batch.req_pool_indices: {forward_batch.req_pool_indices}")
+            #print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
+            #print(f"cache_loc (out_cache_loc): {cache_loc}")
+            #print(f"token_indices: {token_indices}")
+            #print(f"token_indices shape: {token_indices.shape}")
+            ## 添加sliding window调试信息
+            #print(f"layer.sliding_window_size: {getattr(layer, 'sliding_window_size', 'N/A')}")
+            #print(f"Backend dispatch_reason: {getattr(self, 'dispatch_reason', 'N/A')}")
+            #if hasattr(forward_batch, 'req_to_token_pool'):
+                #print(f"req_to_token_pool free_slots count: {len(forward_batch.req_to_token_pool.free_slots)}")
 
         # 获取 KV cache 缓冲区
         k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
@@ -649,17 +649,17 @@ class ClusterFusionBackend(AttentionBackend):
 
         # 调用 ClusterFusion kernel
         try:
-            debug = True
-            if debug and layer.layer_id == 0:
-                print(f"hidden_states: {hidden_states.shape}, {hidden_states.is_contiguous()}, {hidden_states.dtype}")
-                print(f"clusterfusion_qkv_weight: {clusterfusion_qkv_weight.shape}, {clusterfusion_qkv_weight.is_contiguous()}, {clusterfusion_qkv_weight.dtype}")
-                print(f"clusterfusion_o_weight: {clusterfusion_o_weight.shape}, {clusterfusion_o_weight.is_contiguous()}, {clusterfusion_o_weight.dtype}")
-                print(f"k_cache_view: {k_cache_view.shape}, {k_cache_view.is_contiguous()}, {k_cache_view.dtype}")
-                print(f"v_cache_view: {v_cache_view.shape}, {v_cache_view.is_contiguous()}, {v_cache_view.dtype}")
-                print(f"clusterfusion_rms_weight: {clusterfusion_rms_weight.shape}, {clusterfusion_rms_weight.is_contiguous()}, {clusterfusion_rms_weight.dtype}")
-                print(f"clusterfusion_cos: {clusterfusion_cos.shape}, {clusterfusion_cos.is_contiguous()}, {clusterfusion_cos.dtype}")
-                print(f"clusterfusion_sin: {clusterfusion_sin.shape}, {clusterfusion_sin.is_contiguous()}, {clusterfusion_sin.dtype}")
-            output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_sglang(
+            #debug = True
+            #if debug and layer.layer_id == 0:
+                #print(f"hidden_states: {hidden_states.shape}, {hidden_states.is_contiguous()}, {hidden_states.dtype}")
+                #print(f"clusterfusion_qkv_weight: {clusterfusion_qkv_weight.shape}, {clusterfusion_qkv_weight.is_contiguous()}, {clusterfusion_qkv_weight.dtype}")
+                #print(f"clusterfusion_o_weight: {clusterfusion_o_weight.shape}, {clusterfusion_o_weight.is_contiguous()}, {clusterfusion_o_weight.dtype}")
+                #print(f"k_cache_view: {k_cache_view.shape}, {k_cache_view.is_contiguous()}, {k_cache_view.dtype}")
+                #print(f"v_cache_view: {v_cache_view.shape}, {v_cache_view.is_contiguous()}, {v_cache_view.dtype}")
+                #print(f"clusterfusion_rms_weight: {clusterfusion_rms_weight.shape}, {clusterfusion_rms_weight.is_contiguous()}, {clusterfusion_rms_weight.dtype}")
+                #print(f"clusterfusion_cos: {clusterfusion_cos.shape}, {clusterfusion_cos.is_contiguous()}, {clusterfusion_cos.dtype}")
+                #print(f"clusterfusion_sin: {clusterfusion_sin.shape}, {clusterfusion_sin.is_contiguous()}, {clusterfusion_sin.dtype}")
+            output, residual, normed, k_new, v_new = clusterfusion.llama_decoder_layer_sglang(
                 hidden_states,                    # [1, hidden_dim]
                 residual,
                 clusterfusion_qkv_weight,       # [3 * hidden_dim, hidden_dim]
@@ -667,11 +667,13 @@ class ClusterFusionBackend(AttentionBackend):
                 k_cache_view,                     # [seq_len, hidden_dim]
                 v_cache_view,                     # [seq_len, hidden_dim]
                 clusterfusion_rms_weight,       # [hidden_dim]
+                clusterfusion_eps,
                 clusterfusion_cos,              # [head_dim]
                 clusterfusion_sin               # [head_dim]
             )
-            print(f"k_new: {k_new}")
-            print(f"v_new: {v_new}")
+            #print(f"k_new: {k_new}")
+            #print(f"v_new: {v_new}")
+            #print(f"normed: {normed[..., 0:128]}")
 
             if save_kv_cache:
                 forward_batch.token_to_kv_pool.set_kv_buffer(
