@@ -659,7 +659,7 @@ class ClusterFusionBackend(AttentionBackend):
                 #print(f"clusterfusion_rms_weight: {clusterfusion_rms_weight.shape}, {clusterfusion_rms_weight.is_contiguous()}, {clusterfusion_rms_weight.dtype}")
                 #print(f"clusterfusion_cos: {clusterfusion_cos.shape}, {clusterfusion_cos.is_contiguous()}, {clusterfusion_cos.dtype}")
                 #print(f"clusterfusion_sin: {clusterfusion_sin.shape}, {clusterfusion_sin.is_contiguous()}, {clusterfusion_sin.dtype}")
-            output, residual, normed, k_new, v_new = clusterfusion.llama_decoder_layer_sglang(
+            output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_sglang(
                 hidden_states,                    # [1, hidden_dim]
                 residual,
                 clusterfusion_qkv_weight,       # [3 * hidden_dim, hidden_dim]
