@@ -14,6 +14,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
 import torch
+import clusterfusion
 
 if os.environ["SGLANG_ENABLE_TORCH_COMPILE"] == "1":
     import logging
@@ -542,6 +543,7 @@ class ClusterFusionBackend(AttentionBackend):
         save_kv_cache=True,
         # ClusterFusion
         clusterfusion_input=None,
+        clusterfusion_residual=None,
         clusterfusion_qkv_weight=None,
         clusterfusion_o_weight=None,
         clusterfusion_rms_weight=None,
@@ -555,6 +557,7 @@ class ClusterFusionBackend(AttentionBackend):
             clusterfusion_input.shape[0] == 1):
             return self._forward_decode_fused(
                 clusterfusion_input,
+                clusterfusion_residual,
                 forward_batch,
                 layer,
                 save_kv_cache,
@@ -598,6 +601,7 @@ class ClusterFusionBackend(AttentionBackend):
     def _forward_decode_fused(
         self,
         hidden_states: torch.Tensor,
+        residual: torch.Tensor,
         forward_batch: ForwardBatch, 
         layer: RadixAttention,
         save_kv_cache: bool = True,
@@ -631,7 +635,8 @@ class ClusterFusionBackend(AttentionBackend):
             if hasattr(forward_batch, 'req_to_token_pool'):
                 print(f"req_to_token_pool free_slots count: {len(forward_batch.req_to_token_pool.free_slots)}")
             print("=== End Debug ===")
-        
+        print(f"layer.layer_id: {layer.layer_id}")
+
         # 获取 KV cache 缓冲区
         k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
         
@@ -644,8 +649,6 @@ class ClusterFusionBackend(AttentionBackend):
 
         # 调用 ClusterFusion kernel
         try:
-            import clusterfusion
-            
             debug = True
             if debug and layer.layer_id == 0:
                 print(f"hidden_states: {hidden_states.shape}, {hidden_states.is_contiguous()}, {hidden_states.dtype}")
@@ -656,8 +659,9 @@ class ClusterFusionBackend(AttentionBackend):
                 print(f"clusterfusion_rms_weight: {clusterfusion_rms_weight.shape}, {clusterfusion_rms_weight.is_contiguous()}, {clusterfusion_rms_weight.dtype}")
                 print(f"clusterfusion_cos: {clusterfusion_cos.shape}, {clusterfusion_cos.is_contiguous()}, {clusterfusion_cos.dtype}")
                 print(f"clusterfusion_sin: {clusterfusion_sin.shape}, {clusterfusion_sin.is_contiguous()}, {clusterfusion_sin.dtype}")
-            output, k_new, v_new = clusterfusion.llama_decoder_layer(
+            output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_sglang(
                 hidden_states,                    # [1, hidden_dim]
+                residual,
                 clusterfusion_qkv_weight,       # [3 * hidden_dim, hidden_dim]
                 clusterfusion_o_weight,         # [hidden_dim, hidden_dim]
                 k_cache_view,                     # [seq_len, hidden_dim]
@@ -666,6 +670,8 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_cos,              # [head_dim]
                 clusterfusion_sin               # [head_dim]
             )
+            print(f"k_new: {k_new}")
+            print(f"v_new: {v_new}")
 
             if save_kv_cache:
                 forward_batch.token_to_kv_pool.set_kv_buffer(
@@ -677,7 +683,7 @@ class ClusterFusionBackend(AttentionBackend):
         except Exception as e:
             raise RuntimeError(f"ClusterFusion kernel failed: {e}")
         
-        return output
+        return output, residual
 
     def _get_wrapper_idx(self, layer: RadixAttention):
         if self.num_wrappers == 1:

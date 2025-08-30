@@ -256,9 +256,6 @@ class LlamaDecoderLayer(nn.Module):
 
         use_clusterfusion = kwargs.get('use_clusterfusion', False)
 
-        if self.self_attn.attn.layer_id == 0:
-            print(f"positions[0].item(): {positions[0].item()}")
-        
         if use_clusterfusion and forward_batch.forward_mode.is_decode() and hidden_states.shape[0] == 1:
             return self._forward_clusterfusion(
                 positions, hidden_states, forward_batch, residual
@@ -295,12 +292,16 @@ class LlamaDecoderLayer(nn.Module):
         
         # Handle residual connection
         if residual is None:
-            residual = hidden_states
+            residual = torch.zeros(hidden_states.shape).to(0).half()
 
         if self.self_attn.attn.layer_id == 0:
             print(f"positions[0].item(): {positions[0].item()}")
-        pos_idx = positions[0].item() if positions.numel() > 0 else 0
-        cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
+            print(f"self.self_attn.rotary_emb.cos_sin_cache.shape: {self.self_attn.rotary_emb.cos_sin_cache.shape}")
+        #pos_idx = positions[0].item() if positions.numel() > 0 else 0
+        #cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
+        #cos, sin = cos_sin.chunk(2, dim=-1)
+        positions = positions.flatten()
+        cos_sin = self.self_attn.rotary_emb.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
 
         if (self.clusterfusion_qkv_weight is None):
@@ -329,7 +330,7 @@ class LlamaDecoderLayer(nn.Module):
             self.clusterfusion_qkv_weight = torch.cat([q_weight_t, k_weight_t, v_weight_t], dim=0)
         
         # Call the fused kernel through the backend
-        hidden_states = forward_batch.attn_backend.forward_decode(
+        hidden_states, residual = forward_batch.attn_backend.forward_decode(
             torch.zeros(0),
             torch.zeros(0),
             torch.zeros(0),
@@ -337,6 +338,7 @@ class LlamaDecoderLayer(nn.Module):
             forward_batch,
             # ClusterFusion
             clusterfusion_input=hidden_states,
+            clusterfusion_residual=residual,
             clusterfusion_qkv_weight=self.clusterfusion_qkv_weight,
             clusterfusion_o_weight=self.self_attn.o_proj.weight,
             clusterfusion_rms_weight=self.input_layernorm.weight,
@@ -344,6 +346,7 @@ class LlamaDecoderLayer(nn.Module):
             clusterfusion_sin=torch.cat([sin, sin], dim=0),
             layer_id=self.self_attn.attn.layer_id
         )
+        hidden_states
         
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
