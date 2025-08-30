@@ -325,7 +325,7 @@ class LlamaDecoderLayer(nn.Module):
             clusterfusion_input=hidden_states,
             clusterfusion_residual=residual,
             clusterfusion_qkv_weight=self.self_attn.qkv_proj.weight,
-            clusterfusion_o_weight=self.self_attn.o_proj.weight.t().contiguous(),
+            clusterfusion_o_weight=self.self_attn.o_proj.weight,
             clusterfusion_rms_weight=self.input_layernorm.weight,
             clusterfusion_eps=self.input_layernorm.variance_epsilon,
             clusterfusion_cos=torch.cat([cos, cos], dim=-1),
