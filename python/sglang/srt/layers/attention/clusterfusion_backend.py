@@ -600,6 +600,39 @@ class ClusterFusionBackend(AttentionBackend):
 
             return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
+    def _get_contiguous_kv(
+        self,
+        forward_batch: ForwardBatch,
+        layer: RadixAttention
+    ):
+        req_idx = forward_batch.req_pool_indices[0].item()
+        seq_len = forward_batch.seq_lens[0].item()
+
+        token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len-1]
+        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
+        
+        num_heads = k_cache_full.shape[1]
+        head_dim = k_cache_full.shape[2]
+        hidden_dim = num_heads * head_dim
+        
+        k_cache_view = k_cache_full[token_indices].view(seq_len-1, hidden_dim)
+        v_cache_view = v_cache_full[token_indices].view(seq_len-1, hidden_dim)
+        return k_cache_view, v_cache_view
+
+    def _get_dummy_kv(
+        self,
+        forward_batch: ForwardBatch,
+        layer: RadixAttention
+    ):
+        seq_len = forward_batch.seq_lens[0].item()
+        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
+        num_heads = k_cache_full.shape[1]
+        head_dim = k_cache_full.shape[2]
+        hidden_dim = num_heads * head_dim
+
+        device = k_cache_full.device
+        return torch.randn((seq_len - 1, hidden_dim), device=device, dtype=torch.float16), torch.randn((seq_len - 1, hidden_dim), device=device, dtype=torch.float16)
+
     def _forward_decode_fused(
         self,
         hidden_states: torch.Tensor,
@@ -614,14 +647,9 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_cos=None,
         clusterfusion_sin=None,
     ) -> torch.Tensor:
-        req_idx = forward_batch.req_pool_indices[0].item()
-        seq_len = forward_batch.seq_lens[0].item()
-        
-        # 获取 token indices，避免不必要的复制
-        token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len-1]
-
         # 获取当前位置用于写入新的 KV
         cache_loc = forward_batch.out_cache_loc
+        k_cache_view, v_cache_view = self._get_contiguous_kv(forward_batch, layer)
 
         #if layer.layer_id == 0:
             #print(f"req_idx: {req_idx}")
@@ -637,15 +665,6 @@ class ClusterFusionBackend(AttentionBackend):
             #if hasattr(forward_batch, 'req_to_token_pool'):
                 #print(f"req_to_token_pool free_slots count: {len(forward_batch.req_to_token_pool.free_slots)}")
 
-        # 获取 KV cache 缓冲区
-        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
-        
-        num_heads = k_cache_full.shape[1]
-        head_dim = k_cache_full.shape[2]
-        hidden_dim = num_heads * head_dim
-        
-        k_cache_view = k_cache_full[token_indices].view(seq_len-1, hidden_dim)
-        v_cache_view = v_cache_full[token_indices].view(seq_len-1, hidden_dim)
 
         # 调用 ClusterFusion kernel
         try:
