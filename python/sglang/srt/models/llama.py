@@ -19,6 +19,8 @@
 import logging
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
+import torch.cuda.nvtx as nvtx
+
 import torch
 from torch import nn
 from transformers import LlamaConfig
@@ -254,27 +256,24 @@ class LlamaDecoderLayer(nn.Module):
         **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        #print(f"==============DEBUG MESSAGE FOR layer {self.self_attn.attn.layer_id}=============")
         use_clusterfusion = kwargs.get('use_clusterfusion', False)
-        #if forward_batch.forward_mode.is_decode():
-            #print(f"hidden_states (decode layer input): {hidden_states[..., 0:128]}")
-
         if use_clusterfusion and forward_batch.forward_mode.is_decode() and hidden_states.shape[0] == 1:
             return self._forward_clusterfusion(
                 positions, hidden_states, forward_batch, residual
             )
         else:
             # Self Attention
-            if residual is None:
-                residual = hidden_states
-                hidden_states = self.input_layernorm(hidden_states)
-            else:
-                hidden_states, residual = self.input_layernorm(hidden_states, residual)
-            hidden_states = self.self_attn(
-                positions=positions,
-                hidden_states=hidden_states,
-                forward_batch=forward_batch,
-            )
+            with nvtx.range("flashinfer_layernorm_1_attention"):
+                if residual is None:
+                    residual = hidden_states
+                    hidden_states = self.input_layernorm(hidden_states)
+                else:
+                    hidden_states, residual = self.input_layernorm(hidden_states, residual)
+                hidden_states = self.self_attn(
+                    positions=positions,
+                    hidden_states=hidden_states,
+                    forward_batch=forward_batch,
+                )
 
             #if forward_batch.forward_mode.is_decode():
                 #print(f"hidden_states (attn output): {hidden_states[..., 0:128]}")
@@ -301,40 +300,29 @@ class LlamaDecoderLayer(nn.Module):
         if residual is None:
             residual = torch.zeros(hidden_states.shape).to(0).half()
 
-        #if self.self_attn.attn.layer_id == 0:
-            #print(f"positions[0].item(): {positions[0].item()}")
-            #print(f"self.self_attn.rotary_emb.cos_sin_cache.shape: {self.self_attn.rotary_emb.cos_sin_cache.shape}")
-            #print(f"self.input_layernorm.variance_epsilon: {self.input_layernorm.variance_epsilon}")
-        #pos_idx = positions[0].item() if positions.numel() > 0 else 0
-        #cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
-        #cos, sin = cos_sin.chunk(2, dim=-1)
         positions = positions.flatten()
         cos_sin = self.self_attn.rotary_emb.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
-        #print(self.self_attn.qkv_proj.weight.is_contiguous(), self.self_attn.qkv_proj.weight.shape)
-        #print(self.self_attn.rotary_emb)
 
         # Call the fused kernel through the backend
-        hidden_states, residual = forward_batch.attn_backend.forward_decode(
-            torch.zeros(0),
-            torch.zeros(0),
-            torch.zeros(0),
-            self.self_attn.attn,
-            forward_batch,
-            # ClusterFusion
-            clusterfusion_input=hidden_states,
-            clusterfusion_residual=residual,
-            clusterfusion_qkv_weight=self.self_attn.qkv_proj.weight,
-            clusterfusion_o_weight=self.self_attn.o_proj.weight,
-            clusterfusion_rms_weight=self.input_layernorm.weight,
-            clusterfusion_eps=self.input_layernorm.variance_epsilon,
-            clusterfusion_cos=torch.cat([cos, cos], dim=-1),
-            clusterfusion_sin=torch.cat([sin, sin], dim=-1),
-            layer_id=self.self_attn.attn.layer_id
-        )
-
-        #if self.self_attn.attn.layer_id == 0:
-            #print(f"hidden_states (attn output): {hidden_states[..., 0:128]}")
+        with nvtx.range("clusterfusion_forward_layer"):
+            hidden_states, residual = forward_batch.attn_backend.forward_decode(
+                torch.zeros(0),
+                torch.zeros(0),
+                torch.zeros(0),
+                self.self_attn.attn,
+                forward_batch,
+                # ClusterFusion
+                clusterfusion_input=hidden_states,
+                clusterfusion_residual=residual,
+                clusterfusion_qkv_weight=self.self_attn.qkv_proj.weight,
+                clusterfusion_o_weight=self.self_attn.o_proj.weight,
+                clusterfusion_rms_weight=self.input_layernorm.weight,
+                clusterfusion_eps=self.input_layernorm.variance_epsilon,
+                clusterfusion_cos=torch.cat([cos, cos], dim=-1),
+                clusterfusion_sin=torch.cat([sin, sin], dim=-1),
+                layer_id=self.self_attn.attn.layer_id
+            )
         
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
