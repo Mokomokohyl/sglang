@@ -328,8 +328,8 @@ class LlamaDecoderLayer(nn.Module):
             clusterfusion_o_weight=self.self_attn.o_proj.weight,
             clusterfusion_rms_weight=self.input_layernorm.weight,
             clusterfusion_eps=self.input_layernorm.variance_epsilon,
-            clusterfusion_cos=torch.cat([cos, cos], dim=-1),
-            clusterfusion_sin=torch.cat([sin, sin], dim=-1),
+            clusterfusion_cos=cos, 
+            clusterfusion_sin=sin,
             layer_id=self.self_attn.attn.layer_id
         )
 
