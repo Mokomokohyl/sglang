@@ -295,7 +295,6 @@ class LlamaDecoderLayer(nn.Module):
         """Forward pass using ClusterFusion fused kernel for batch_size=1 decode."""
         # Only support decode mode with batch_size=1
         assert forward_batch.forward_mode.is_decode(), "ClusterFusion only supports decode mode"
-        assert hidden_states.shape[0] == 1, "ClusterFusion only supports batch_size=1"
         
         # Handle residual connection
         if residual is None:
@@ -405,8 +404,7 @@ class LlamaModel(nn.Module):
         # Check if using ClusterFusion backend for fused kernel
         use_clusterfusion = (
             forward_batch.attn_backend.__class__.__name__ == 'ClusterFusionBackend' and
-            forward_batch.forward_mode.is_decode() and
-            hidden_states.shape[0] == 1  # batch_size = 1
+            forward_batch.forward_mode.is_decode()
         )
         for i in range(self.start_layer, self.end_layer):
             if i in self.layers_to_capture:

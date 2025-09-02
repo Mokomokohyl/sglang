@@ -554,8 +554,7 @@ class ClusterFusionBackend(AttentionBackend):
         **kwargs
     ):
         if (clusterfusion_input is not None and 
-            forward_batch.forward_mode.is_decode() and 
-            clusterfusion_input.shape[0] == 1):
+            forward_batch.forward_mode.is_decode()):
             return self._forward_decode_fused(
                 clusterfusion_input,
                 clusterfusion_residual,
