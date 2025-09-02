@@ -259,7 +259,7 @@ class LlamaDecoderLayer(nn.Module):
         #if forward_batch.forward_mode.is_decode():
             #print(f"hidden_states (decode layer input): {hidden_states[..., 0:128]}")
 
-        if use_clusterfusion and forward_batch.forward_mode.is_decode() and hidden_states.shape[0] == 1:
+        if use_clusterfusion and forward_batch.forward_mode.is_decode():
             return self._forward_clusterfusion(
                 positions, hidden_states, forward_batch, residual
             )

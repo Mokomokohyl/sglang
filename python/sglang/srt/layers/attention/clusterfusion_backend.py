@@ -652,6 +652,8 @@ class ClusterFusionBackend(AttentionBackend):
         # 获取当前位置用于写入新的 KV
         cache_loc = forward_batch.out_cache_loc
         k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
+        if layer.layer_id == 0:
+            print(f"hidden_states.shape: {hidden_states.shape}")
 
         #if layer.layer_id == 0:
             #print(f"req_idx: {req_idx}")
