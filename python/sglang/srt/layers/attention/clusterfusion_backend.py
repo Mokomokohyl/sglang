@@ -647,9 +647,12 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_cos=None,
         clusterfusion_sin=None,
     ) -> torch.Tensor:
+        decode_wrapper = self.forward_metadata.decode_wrappers[
+            self._get_wrapper_idx(layer)
+        ]
         # 获取当前位置用于写入新的 KV
         cache_loc = forward_batch.out_cache_loc
-        k_cache_view, v_cache_view = self._get_contiguous_kv(forward_batch, layer)
+        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
 
         #if layer.layer_id == 0:
             #print(f"req_idx: {req_idx}")
@@ -678,13 +681,15 @@ class ClusterFusionBackend(AttentionBackend):
                 #print(f"clusterfusion_rms_weight: {clusterfusion_rms_weight.shape}, {clusterfusion_rms_weight.is_contiguous()}, {clusterfusion_rms_weight.dtype}")
                 #print(f"clusterfusion_cos: {clusterfusion_cos.shape}, {clusterfusion_cos.is_contiguous()}, {clusterfusion_cos.dtype}")
                 #print(f"clusterfusion_sin: {clusterfusion_sin.shape}, {clusterfusion_sin.is_contiguous()}, {clusterfusion_sin.dtype}")
-            output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_sglang(
+            output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_batch_decode_sglang(
                 hidden_states,                    # [1, hidden_dim]
                 residual,
                 clusterfusion_qkv_weight,       # [3 * hidden_dim, hidden_dim]
                 clusterfusion_o_weight,         # [hidden_dim, hidden_dim]
-                k_cache_view,                     # [seq_len, hidden_dim]
-                v_cache_view,                     # [seq_len, hidden_dim]
+                decode_wrapper._paged_kv_indptr_buf,
+                decode_wrapper._paged_kv_indices_buf,
+                k_cache_full,                     # [seq_len, hidden_dim]
+                v_cache_full,                     # [seq_len, hidden_dim]
                 clusterfusion_rms_weight,       # [hidden_dim]
                 clusterfusion_eps,
                 clusterfusion_cos,              # [head_dim]
