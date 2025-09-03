@@ -293,7 +293,6 @@ class LlamaDecoderLayer(nn.Module):
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass using ClusterFusion fused kernel for batch_size=1 decode."""
-        # Only support decode mode with batch_size=1
         assert forward_batch.forward_mode.is_decode(), "ClusterFusion only supports decode mode"
         
         # Handle residual connection
@@ -310,8 +309,10 @@ class LlamaDecoderLayer(nn.Module):
         positions = positions.flatten()
         cos_sin = self.self_attn.rotary_emb.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
-        #print(self.self_attn.qkv_proj.weight.is_contiguous(), self.self_attn.qkv_proj.weight.shape)
-        #print(self.self_attn.rotary_emb)
+        if (self.self_attn.attn.layer_id == 0):
+            print(f"hidden_states.shape: {hidden_states.shape}, {hidden_states.is_contiguous()}")
+            print(f"residual.shape: {residual.shape}, {residual.is_contiguous()}")
+            print(f"cos.shape: {cos.shape}, sin.shape: {sin.shape}, cos.is_contiguous(): {cos.is_contiguous()}")
 
         # Call the fused kernel through the backend
         hidden_states, residual = forward_batch.attn_backend.forward_decode(
@@ -327,8 +328,8 @@ class LlamaDecoderLayer(nn.Module):
             clusterfusion_o_weight=self.self_attn.o_proj.weight,
             clusterfusion_rms_weight=self.input_layernorm.weight,
             clusterfusion_eps=self.input_layernorm.variance_epsilon,
-            clusterfusion_cos=cos, 
-            clusterfusion_sin=sin,
+            clusterfusion_cos=cos.contiguous(), 
+            clusterfusion_sin=sin.contiguous(),
             layer_id=self.self_attn.attn.layer_id
         )
 
