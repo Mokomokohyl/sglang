@@ -652,8 +652,6 @@ class ClusterFusionBackend(AttentionBackend):
         # 获取当前位置用于写入新的 KV
         cache_loc = forward_batch.out_cache_loc
         k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
-        if layer.layer_id == 0:
-            print(f"hidden_states.shape: {hidden_states.shape}")
 
         try:
             output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_batch_decode_sglang(
@@ -676,26 +674,42 @@ class ClusterFusionBackend(AttentionBackend):
                     layer, cache_loc, k_new, v_new, layer.k_scale, layer.v_scale
                 )
             if layer.layer_id == 0:
-                torch.set_printoptions(precision=4, sci_mode=False)
-                print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
-                print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
-                print(f"cache_loc: {cache_loc}")
-                print(f"k: {k_new.shape}, {k_new[..., 0: 32]}")
-                print(f"v: {v_new.shape}, {v_new[..., 0: 32]}")
-                print(f"output: {output.shape}, {output[..., 0: 32]}")
+                #torch.set_printoptions(precision=4, sci_mode=False)
+                #print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
+                #print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
+                #print(f"cache_loc: {cache_loc}")
+                #print(f"k: {k_new.shape}, {k_new[..., 0: 32]}")
+                #print(f"v: {v_new.shape}, {v_new[..., 0: 32]}")
+                #print(f"output: {output.shape}, {output[..., 0: 32]}")
+                # 原子写入一次的 safe dump
                 dump_dir = "/tmp/kv_dumps"
                 os.makedirs(dump_dir, exist_ok=True)
                 dump_file = os.path.join(dump_dir, f"clusterfusion_layer{layer.layer_id}.pt")
-                if not os.path.exists(dump_file):
-                    torch.save(
-                        {
-                            "k_new": k_new.detach().cpu(),
-                            "v_new": v_new.detach().cpu(),
-                            "output": output.detach().cpu(),
-                        },
-                        dump_file,
-                    )
-                    print("Wrote KV dump:", dump_file)
+                marker_file = dump_file + ".written.marker"
+
+                # 尝试通过创建 marker 原子地抢占写入权限
+                try:
+                    fd = os.open(marker_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    # 已有人写过，跳过写入
+                    pass
+                else:
+                    try:
+                        tmp_path = dump_file + f".tmp.{os.getpid()}"
+                        torch.save(
+                            {
+                                "k_new": k_new.detach().cpu(),
+                                "v_new": v_new.detach().cpu(),
+                                "output": output.detach().cpu(),
+                            },
+                            tmp_path,
+                        )
+                        # 原子替换（如果 dump_file 不存在则相当于创建）
+                        os.replace(tmp_path, dump_file)
+                        print("===================[INFO] Wrote KV dump:", dump_file)
+                        # 保留 marker_file 作为“已写入”标识，避免后续覆盖
+                    finally:
+                        os.close(fd)
                 
         except ImportError:
             raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")

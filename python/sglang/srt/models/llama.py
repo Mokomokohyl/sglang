@@ -295,11 +295,11 @@ class LlamaDecoderLayer(nn.Module):
         positions = positions.flatten()
         cos_sin = self.self_attn.rotary_emb.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
-        if (self.self_attn.attn.layer_id == 0):
-            print(f"hidden_states.shape: {hidden_states.shape}, {hidden_states.is_contiguous()}")
-            print(f"residual.shape: {residual.shape}, {residual.is_contiguous()}")
-            print(f"cos.shape: {cos.shape}, sin.shape: {sin.shape}, cos.is_contiguous(): {cos.is_contiguous()}")
-            print(positions)
+        #if (self.self_attn.attn.layer_id == 0):
+            #print(f"hidden_states.shape: {hidden_states.shape}, {hidden_states.is_contiguous()}")
+            #print(f"residual.shape: {residual.shape}, {residual.is_contiguous()}")
+            #print(f"cos.shape: {cos.shape}, sin.shape: {sin.shape}, cos.is_contiguous(): {cos.is_contiguous()}")
+            #print(positions)
 
         # Call the fused kernel through the backend
         hidden_states, residual = forward_batch.attn_backend.forward_decode(

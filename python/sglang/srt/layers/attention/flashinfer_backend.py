@@ -566,26 +566,42 @@ class FlashInferAttnBackend(AttentionBackend):
             v_scale=layer.v_scale,
         )
         if layer.layer_id == 0:
+            # 原子写入一次的 safe dump
             dump_dir = "/tmp/kv_dumps"
             os.makedirs(dump_dir, exist_ok=True)
             dump_file = os.path.join(dump_dir, f"flashinfer_layer{layer.layer_id}.pt")
-            if not os.path.exists(dump_file):
-                torch.save(
-                    {
-                        "k": k.detach().cpu(),
-                        "v": v.detach().cpu(),
-                        "o": o.view(-1, layer.tp_q_head_num * layer.head_dim).detach().cpu(),
-                    },
-                    dump_file,
-                )
-                print("Wrote KV dump:", dump_file)
-            torch.set_printoptions(precision=4, sci_mode=False)
-            print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
-            print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
-            print(f"cache_loc: {cache_loc}")
-            print(f"k: {k.shape}, {k[..., 0: 32]}")
-            print(f"v: {v.shape}, {v[..., 0: 32]}")
-            print(f"output: {o.shape}, {o.view(-1, layer.tp_q_head_num * layer.head_dim)[..., 0: 32]}")
+            marker_file = dump_file + ".written.marker"
+
+            # 尝试通过创建 marker 原子地抢占写入权限
+            try:
+                fd = os.open(marker_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                # 已有人写过，跳过写入
+                pass
+            else:
+                try:
+                    tmp_path = dump_file + f".tmp.{os.getpid()}"
+                    torch.save(
+                        {
+                            "k_new": k.detach().cpu(),
+                            "v_new": v.detach().cpu(),
+                            "output": o.detach().cpu(),
+                        },
+                        tmp_path,
+                    )
+                    # 原子替换（如果 dump_file 不存在则相当于创建）
+                    os.replace(tmp_path, dump_file)
+                    print("===================[INFO] Wrote KV dump:", dump_file)
+                    # 保留 marker_file 作为“已写入”标识，避免后续覆盖
+                finally:
+                    os.close(fd)
+            #torch.set_printoptions(precision=4, sci_mode=False)
+            #print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
+            #print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
+            #print(f"cache_loc: {cache_loc}")
+            #print(f"k: {k.shape}, {k[..., 0: 32]}")
+            #print(f"v: {v.shape}, {v[..., 0: 32]}")
+            #print(f"output: {o.shape}, {o.view(-1, layer.tp_q_head_num * layer.head_dim)[..., 0: 32]}")
 
         return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
