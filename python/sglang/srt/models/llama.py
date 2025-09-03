@@ -311,8 +311,8 @@ class LlamaDecoderLayer(nn.Module):
             clusterfusion_o_weight=self.self_attn.o_proj.weight,
             clusterfusion_rms_weight=self.input_layernorm.weight,
             clusterfusion_eps=self.input_layernorm.variance_epsilon,
-            clusterfusion_cos=cos, 
-            clusterfusion_sin=sin,
+            clusterfusion_cos=cos.contiguous(), 
+            clusterfusion_sin=sin.contiguous(),
             layer_id=self.self_attn.attn.layer_id
         )
 
