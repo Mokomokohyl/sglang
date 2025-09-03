@@ -655,21 +655,6 @@ class ClusterFusionBackend(AttentionBackend):
         if layer.layer_id == 0:
             print(f"hidden_states.shape: {hidden_states.shape}")
 
-        #if layer.layer_id == 0:
-            #print(f"req_idx: {req_idx}")
-            #print(f"seq_len: {seq_len}")
-            #print(f"forward_batch.req_pool_indices: {forward_batch.req_pool_indices}")
-            #print(f"forward_batch.seq_lens: {forward_batch.seq_lens}")
-            #print(f"cache_loc (out_cache_loc): {cache_loc}")
-            #print(f"token_indices: {token_indices}")
-            #print(f"token_indices shape: {token_indices.shape}")
-            ## 添加sliding window调试信息
-            #print(f"layer.sliding_window_size: {getattr(layer, 'sliding_window_size', 'N/A')}")
-            #print(f"Backend dispatch_reason: {getattr(self, 'dispatch_reason', 'N/A')}")
-            #if hasattr(forward_batch, 'req_to_token_pool'):
-                #print(f"req_to_token_pool free_slots count: {len(forward_batch.req_to_token_pool.free_slots)}")
-
-
         try:
             if layer.layer_id == 0:
                 print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")

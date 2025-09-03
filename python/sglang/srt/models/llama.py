@@ -254,10 +254,7 @@ class LlamaDecoderLayer(nn.Module):
         **kwargs
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        #print(f"==============DEBUG MESSAGE FOR layer {self.self_attn.attn.layer_id}=============")
         use_clusterfusion = kwargs.get('use_clusterfusion', False)
-        #if forward_batch.forward_mode.is_decode():
-            #print(f"hidden_states (decode layer input): {hidden_states[..., 0:128]}")
 
         if use_clusterfusion and forward_batch.forward_mode.is_decode():
             return self._forward_clusterfusion(
@@ -276,13 +273,9 @@ class LlamaDecoderLayer(nn.Module):
                 forward_batch=forward_batch,
             )
 
-            #if forward_batch.forward_mode.is_decode():
-                #print(f"hidden_states (attn output): {hidden_states[..., 0:128]}")
-
             # Fully Connected
             hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
             hidden_states = self.mlp(hidden_states)
-            #print(f"============== END FOR layer {self.self_attn.attn.layer_id} =============")
             return hidden_states, residual
 
     def _forward_clusterfusion(
@@ -299,13 +292,6 @@ class LlamaDecoderLayer(nn.Module):
         if residual is None:
             residual = torch.zeros(hidden_states.shape).to(0).half()
 
-        #if self.self_attn.attn.layer_id == 0:
-            #print(f"positions[0].item(): {positions[0].item()}")
-            #print(f"self.self_attn.rotary_emb.cos_sin_cache.shape: {self.self_attn.rotary_emb.cos_sin_cache.shape}")
-            #print(f"self.input_layernorm.variance_epsilon: {self.input_layernorm.variance_epsilon}")
-        #pos_idx = positions[0].item() if positions.numel() > 0 else 0
-        #cos_sin = self.self_attn.rotary_emb.cos_sin_cache[pos_idx]
-        #cos, sin = cos_sin.chunk(2, dim=-1)
         positions = positions.flatten()
         cos_sin = self.self_attn.rotary_emb.cos_sin_cache.index_select(0, positions)
         cos, sin = cos_sin.chunk(2, dim=-1)
@@ -313,6 +299,7 @@ class LlamaDecoderLayer(nn.Module):
             print(f"hidden_states.shape: {hidden_states.shape}, {hidden_states.is_contiguous()}")
             print(f"residual.shape: {residual.shape}, {residual.is_contiguous()}")
             print(f"cos.shape: {cos.shape}, sin.shape: {sin.shape}, cos.is_contiguous(): {cos.is_contiguous()}")
+            print(positions)
 
         # Call the fused kernel through the backend
         hidden_states, residual = forward_batch.attn_backend.forward_decode(
