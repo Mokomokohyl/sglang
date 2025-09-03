@@ -676,11 +676,26 @@ class ClusterFusionBackend(AttentionBackend):
                     layer, cache_loc, k_new, v_new, layer.k_scale, layer.v_scale
                 )
             if layer.layer_id == 0:
+                torch.set_printoptions(precision=4, sci_mode=False)
                 print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
                 print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
-                print(f"cache_loc, {cache_loc.shape}, {cache_loc}")
-                print(f"k: {k_new.shape}, {k_new}")
-                print(f"v: {v_new.shape}, {v_new}")
+                print(f"cache_loc: {cache_loc}")
+                print(f"k: {k_new.shape}, {k_new[..., 0: 32]}")
+                print(f"v: {v_new.shape}, {v_new[..., 0: 32]}")
+                print(f"output: {output.shape}, {output[..., 0: 32]}")
+                dump_dir = "/tmp/kv_dumps"
+                os.makedirs(dump_dir, exist_ok=True)
+                dump_file = os.path.join(dump_dir, f"clusterfusion_layer{layer.layer_id}.pt")
+                if not os.path.exists(dump_file):
+                    torch.save(
+                        {
+                            "k_new": k_new.detach().cpu(),
+                            "v_new": v_new.detach().cpu(),
+                            "output": output.detach().cpu(),
+                        },
+                        dump_file,
+                    )
+                    print("Wrote KV dump:", dump_file)
                 
         except ImportError:
             raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")

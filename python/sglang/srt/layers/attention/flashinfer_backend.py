@@ -556,12 +556,6 @@ class FlashInferAttnBackend(AttentionBackend):
                     layer, cache_loc, k, v, layer.k_scale, layer.v_scale
                 )
 
-        if layer.layer_id == 0:
-            print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
-            print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
-            print(f"cache_loc: {cache_loc}")
-            print(f"k: {k.shape}, {k}")
-            print(f"v: {v.shape}, {v}")
         # Call the wrapped function
         o = decode_wrapper.forward(
             q.contiguous().view(-1, layer.tp_q_head_num, layer.head_dim),
@@ -571,6 +565,27 @@ class FlashInferAttnBackend(AttentionBackend):
             k_scale=layer.k_scale,
             v_scale=layer.v_scale,
         )
+        if layer.layer_id == 0:
+            dump_dir = "/tmp/kv_dumps"
+            os.makedirs(dump_dir, exist_ok=True)
+            dump_file = os.path.join(dump_dir, f"flashinfer_layer{layer.layer_id}.pt")
+            if not os.path.exists(dump_file):
+                torch.save(
+                    {
+                        "k": k.detach().cpu(),
+                        "v": v.detach().cpu(),
+                        "o": o.view(-1, layer.tp_q_head_num * layer.head_dim).detach().cpu(),
+                    },
+                    dump_file,
+                )
+                print("Wrote KV dump:", dump_file)
+            torch.set_printoptions(precision=4, sci_mode=False)
+            print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
+            print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
+            print(f"cache_loc: {cache_loc}")
+            print(f"k: {k.shape}, {k[..., 0: 32]}")
+            print(f"v: {v.shape}, {v[..., 0: 32]}")
+            print(f"output: {o.shape}, {o.view(-1, layer.tp_q_head_num * layer.head_dim)[..., 0: 32]}")
 
         return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
