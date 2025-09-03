@@ -656,10 +656,6 @@ class ClusterFusionBackend(AttentionBackend):
             print(f"hidden_states.shape: {hidden_states.shape}")
 
         try:
-            if layer.layer_id == 0:
-                print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
-                print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
-                print(f"cache_loc, {cache_loc.shape}, {cache_loc}")
             output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_batch_decode_sglang(
                 hidden_states,                    # [batch_size, hidden_dim]
                 residual,
@@ -679,6 +675,12 @@ class ClusterFusionBackend(AttentionBackend):
                 forward_batch.token_to_kv_pool.set_kv_buffer(
                     layer, cache_loc, k_new, v_new, layer.k_scale, layer.v_scale
                 )
+            if layer.layer_id == 0:
+                print(f"decode_wrapper._paged_kv_indptr_buf, {decode_wrapper._paged_kv_indptr_buf.shape}, {decode_wrapper._paged_kv_indptr_buf}")
+                print(f"decode_wrapper._paged_kv_indices_buf, {decode_wrapper._paged_kv_indices_buf.shape}, {decode_wrapper._paged_kv_indices_buf}")
+                print(f"cache_loc, {cache_loc.shape}, {cache_loc}")
+                print(f"k: {k_new.shape}, {k_new}")
+                print(f"v: {v_new.shape}, {v_new}")
                 
         except ImportError:
             raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")
