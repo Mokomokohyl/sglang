@@ -649,12 +649,10 @@ class ClusterFusionBackend(AttentionBackend):
         decode_wrapper = self.forward_metadata.decode_wrappers[
             self._get_wrapper_idx(layer)
         ]
-        # 获取当前位置用于写入新的 KV
-        cache_loc = forward_batch.out_cache_loc
         k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
 
         try:
-            output, residual, k_new, v_new = clusterfusion.llama_decoder_layer_batch_decode_sglang(
+            output, residual = clusterfusion.llama_decoder_layer_batch_decode_sglang(
                 hidden_states,                    # [1, hidden_dim]
                 residual,
                 clusterfusion_qkv_weight,       # [3 * hidden_dim, hidden_dim]
@@ -668,11 +666,6 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_cos,              # [head_dim]
                 clusterfusion_sin               # [head_dim]
             )
-
-            if save_kv_cache:
-                forward_batch.token_to_kv_pool.set_kv_buffer(
-                    layer, cache_loc, k_new, v_new, layer.k_scale, layer.v_scale
-                )
                 
         except ImportError:
             raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")
