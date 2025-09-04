@@ -257,7 +257,7 @@ class LlamaDecoderLayer(nn.Module):
         use_clusterfusion = kwargs.get('use_clusterfusion', False)
 
         if use_clusterfusion and forward_batch.forward_mode.is_decode():
-            return self._forward_clusterfusion(
+            hidden_states, residual = self._forward_clusterfusion(
                 positions, hidden_states, forward_batch, residual
             )
         else:
@@ -273,10 +273,10 @@ class LlamaDecoderLayer(nn.Module):
                 forward_batch=forward_batch,
             )
 
-            # Fully Connected
-            hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-            hidden_states = self.mlp(hidden_states)
-            return hidden_states, residual
+        # Fully Connected
+        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
+        hidden_states = self.mlp(hidden_states)
+        return hidden_states, residual
 
     def _forward_clusterfusion(
         self,
@@ -316,13 +316,6 @@ class LlamaDecoderLayer(nn.Module):
             layer_id=self.self_attn.attn.layer_id
         )
 
-        #if self.self_attn.attn.layer_id == 0:
-            #print(f"hidden_states (attn output): {hidden_states[..., 0:128]}")
-        
-        # Fully Connected
-        hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        hidden_states = self.mlp(hidden_states)
-        #print(f"============== END FOR layer {self.self_attn.attn.layer_id} =============")
         return hidden_states, residual
 
 
