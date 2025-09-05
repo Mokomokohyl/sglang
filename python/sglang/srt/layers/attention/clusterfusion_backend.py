@@ -548,8 +548,8 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_o_weight=None,
         clusterfusion_rms_weight=None,
         clusterfusion_eps=None,
-        clusterfusion_cos=None,
-        clusterfusion_sin=None,
+        clusterfusion_positions = None,
+        clusterfusion_cos_sin = None,
         layer_id=None,
         **kwargs
     ):
@@ -565,8 +565,8 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_o_weight,
                 clusterfusion_rms_weight,
                 clusterfusion_eps,
-                clusterfusion_cos,
-                clusterfusion_sin
+                clusterfusion_positions,
+                clusterfusion_cos_sin
             )
 
         else: 
@@ -643,8 +643,8 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_o_weight=None,
         clusterfusion_rms_weight=None,
         clusterfusion_eps=None,
-        clusterfusion_cos=None,
-        clusterfusion_sin=None,
+        clusterfusion_positions=None,
+        clusterfusion_cos_sin=None,
     ) -> torch.Tensor:
         decode_wrapper = self.forward_metadata.decode_wrappers[
             self._get_wrapper_idx(layer)
@@ -653,18 +653,18 @@ class ClusterFusionBackend(AttentionBackend):
 
         try:
             output, residual = clusterfusion.llama_decoder_layer_batch_decode_sglang(
-                hidden_states,                    # [1, hidden_dim]
+                hidden_states,
                 residual,
-                clusterfusion_qkv_weight,       # [3 * hidden_dim, hidden_dim]
-                clusterfusion_o_weight,         # [hidden_dim, hidden_dim]
+                clusterfusion_qkv_weight,
+                clusterfusion_o_weight,
                 decode_wrapper._paged_kv_indptr_buf,
                 decode_wrapper._paged_kv_indices_buf,
-                k_cache_full,                     # [seq_len, hidden_dim]
-                v_cache_full,                     # [seq_len, hidden_dim]
-                clusterfusion_rms_weight,       # [hidden_dim]
+                k_cache_full,
+                v_cache_full,
+                clusterfusion_rms_weight,
                 clusterfusion_eps,
-                clusterfusion_cos,              # [head_dim]
-                clusterfusion_sin               # [head_dim]
+                clusterfusion_positions,
+                clusterfusion_cos_sin
             )
                 
         except ImportError:
