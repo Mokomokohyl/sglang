@@ -542,6 +542,8 @@ class ClusterFusionBackend(AttentionBackend):
         forward_batch: ForwardBatch,
         save_kv_cache=True,
         # ClusterFusion
+        clusterfusion_output=None,
+        clusterfusion_residual_output=None,
         clusterfusion_input=None,
         clusterfusion_residual=None,
         clusterfusion_qkv_weight=None,
@@ -556,6 +558,8 @@ class ClusterFusionBackend(AttentionBackend):
         if (clusterfusion_input is not None and 
             forward_batch.forward_mode.is_decode()):
             return self._forward_decode_fused(
+                clusterfusion_output,
+                clusterfusion_residual_output,
                 clusterfusion_input,
                 clusterfusion_residual,
                 forward_batch,
@@ -601,6 +605,8 @@ class ClusterFusionBackend(AttentionBackend):
 
     def _forward_decode_fused(
         self,
+        clusterfusion_output: torch.Tensor,
+        clusterfusion_residual_output: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: torch.Tensor,
         forward_batch: ForwardBatch, 
@@ -618,7 +624,9 @@ class ClusterFusionBackend(AttentionBackend):
         ]
 
         try:
-            output, residual = clusterfusion.llama_decoder_layer_batch_decode_sglang(
+            clusterfusion.llama_decoder_layer_batch_decode_sglang(
+                clusterfusion_output,
+                clusterfusion_residual_output,
                 hidden_states,
                 residual,
                 clusterfusion_qkv_weight,
@@ -639,7 +647,7 @@ class ClusterFusionBackend(AttentionBackend):
         except Exception as e:
             raise RuntimeError(f"ClusterFusion kernel failed: {e}")
         
-        return output, residual
+        return clusterfusion_output, clusterfusion_residual_output
 
     def _get_wrapper_idx(self, layer: RadixAttention):
         if self.num_wrappers == 1:
