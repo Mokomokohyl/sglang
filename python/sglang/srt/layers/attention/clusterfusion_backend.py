@@ -599,39 +599,6 @@ class ClusterFusionBackend(AttentionBackend):
 
             return o.view(-1, layer.tp_q_head_num * layer.head_dim)
 
-    def _get_contiguous_kv(
-        self,
-        forward_batch: ForwardBatch,
-        layer: RadixAttention
-    ):
-        req_idx = forward_batch.req_pool_indices[0].item()
-        seq_len = forward_batch.seq_lens[0].item()
-
-        token_indices = forward_batch.req_to_token_pool.req_to_token[req_idx, :seq_len-1]
-        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
-        
-        num_heads = k_cache_full.shape[1]
-        head_dim = k_cache_full.shape[2]
-        hidden_dim = num_heads * head_dim
-        
-        k_cache_view = k_cache_full[token_indices].view(seq_len-1, hidden_dim)
-        v_cache_view = v_cache_full[token_indices].view(seq_len-1, hidden_dim)
-        return k_cache_view, v_cache_view
-
-    def _get_dummy_kv(
-        self,
-        forward_batch: ForwardBatch,
-        layer: RadixAttention
-    ):
-        seq_len = forward_batch.seq_lens[0].item()
-        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
-        num_heads = k_cache_full.shape[1]
-        head_dim = k_cache_full.shape[2]
-        hidden_dim = num_heads * head_dim
-
-        device = k_cache_full.device
-        return torch.randn((seq_len - 1, hidden_dim), device=device, dtype=torch.float16), torch.randn((seq_len - 1, hidden_dim), device=device, dtype=torch.float16)
-
     def _forward_decode_fused(
         self,
         hidden_states: torch.Tensor,
@@ -649,7 +616,6 @@ class ClusterFusionBackend(AttentionBackend):
         decode_wrapper = self.forward_metadata.decode_wrappers[
             self._get_wrapper_idx(layer)
         ]
-        k_cache_full, v_cache_full = forward_batch.token_to_kv_pool.get_kv_buffer(layer.layer_id)
 
         try:
             output, residual = clusterfusion.llama_decoder_layer_batch_decode_sglang(
@@ -659,8 +625,9 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_o_weight,
                 decode_wrapper._paged_kv_indptr_buf,
                 decode_wrapper._paged_kv_indices_buf,
-                k_cache_full,
-                v_cache_full,
+                forward_batch.token_to_kv_pool.k_data_ptrs,
+                forward_batch.token_to_kv_pool.v_data_ptrs,
+                layer.layer_id - forward_batch.token_to_kv_pool.start_layer,
                 clusterfusion_rms_weight,
                 clusterfusion_eps,
                 clusterfusion_positions,

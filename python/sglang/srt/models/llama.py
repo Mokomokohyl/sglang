@@ -295,9 +295,9 @@ class LlamaDecoderLayer(nn.Module):
 
         # Call the fused kernel through the backend
         hidden_states, residual = forward_batch.attn_backend.forward_decode(
-            torch.zeros(0),
-            torch.zeros(0),
-            torch.zeros(0),
+            None,
+            None,
+            None,
             self.self_attn.attn,
             forward_batch,
             # ClusterFusion
