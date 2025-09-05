@@ -291,7 +291,11 @@ class LlamaDecoderLayer(nn.Module):
         
         # Handle residual connection
         if residual is None:
-            residual = torch.zeros(hidden_states.shape).to(0).half()
+            if not hasattr(self, "residual_buffer"):
+                self.residual_buffer = torch.zeros_like(hidden_states, device="cuda", dtype=torch.float16)
+            residual = self.residual_buffer
+            residual.zero_()
+
 
         # Call the fused kernel through the backend
         hidden_states, residual = forward_batch.attn_backend.forward_decode(
