@@ -301,7 +301,6 @@ class LlamaDecoderLayer(nn.Module):
             if not hasattr(self, "output_buffer"):
                 self.output_buffer = torch.zeros_like(hidden_states, device="cuda", dtype=torch.float16)
             output = self.output_buffer
-            output.zero_()
         residual_output = None
         if residual_output is None:
             if not hasattr(self, "residual_output_buffer"):
