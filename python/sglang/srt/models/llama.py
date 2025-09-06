@@ -307,7 +307,6 @@ class LlamaDecoderLayer(nn.Module):
             if not hasattr(self, "residual_output_buffer"):
                 self.residual_output_buffer = torch.zeros_like(hidden_states, device="cuda", dtype=torch.float16)
             residual_output = self.residual_output_buffer
-            residual_output.zero_()
 
         # Call the fused kernel through the backend
         hidden_states, residual = forward_batch.attn_backend.forward_decode(
