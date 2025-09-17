@@ -256,7 +256,7 @@ class LlamaDecoderLayer(nn.Module):
 
         use_clusterfusion = kwargs.get('use_clusterfusion', False)
 
-        if use_clusterfusion and forward_batch.forward_mode.is_decode():
+        if use_clusterfusion:
             hidden_states, residual = self._forward_clusterfusion(
                 positions, hidden_states, forward_batch, residual
             )
@@ -286,9 +286,7 @@ class LlamaDecoderLayer(nn.Module):
         residual: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass using ClusterFusion fused kernel for batch_size=1 decode."""
-        # Only support decode mode with batch_size=1
-        assert forward_batch.forward_mode.is_decode(), "ClusterFusion only supports decode mode"
-        
+        assert hidden_states.shape[0] == 1, "ClusterFusion only supports batch_size = 1"
         # Handle residual connection
         if residual is None:
             if not hasattr(self, "residual_buffer"):
