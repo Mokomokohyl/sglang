@@ -13,8 +13,8 @@ from enum import Enum, auto
 from functools import partial
 from typing import TYPE_CHECKING, Callable, List, Optional, Union
 
-import torch
 import clusterfusion
+import torch
 
 if os.environ["SGLANG_ENABLE_TORCH_COMPILE"] == "1":
     import logging
@@ -70,6 +70,7 @@ global_workspace_buffer = None
 
 class ClusterFusionBackend(AttentionBackend):
     """Flashinfer attention kernels."""
+
     """ClusterFusion kernel replaced forward_decode"""
 
     def __init__(
@@ -550,13 +551,12 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_o_weight=None,
         clusterfusion_rms_weight=None,
         clusterfusion_eps=None,
-        clusterfusion_positions = None,
-        clusterfusion_cos_sin = None,
+        clusterfusion_positions=None,
+        clusterfusion_cos_sin=None,
         layer_id=None,
-        **kwargs
+        **kwargs,
     ):
-        if (clusterfusion_input is not None and 
-            forward_batch.forward_mode.is_decode()):
+        if clusterfusion_input is not None and forward_batch.forward_mode.is_decode():
             return self._forward_decode_fused(
                 clusterfusion_output,
                 clusterfusion_residual_output,
@@ -570,10 +570,10 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_rms_weight,
                 clusterfusion_eps,
                 clusterfusion_positions,
-                clusterfusion_cos_sin
+                clusterfusion_cos_sin,
             )
 
-        else: 
+        else:
             # Standard FlashInfer path
             decode_wrapper = self.forward_metadata.decode_wrappers[
                 self._get_wrapper_idx(layer)
@@ -609,7 +609,7 @@ class ClusterFusionBackend(AttentionBackend):
         clusterfusion_residual_output: torch.Tensor,
         hidden_states: torch.Tensor,
         residual: torch.Tensor,
-        forward_batch: ForwardBatch, 
+        forward_batch: ForwardBatch,
         layer: RadixAttention,
         save_kv_cache: bool = True,
         clusterfusion_qkv_weight=None,
@@ -639,14 +639,16 @@ class ClusterFusionBackend(AttentionBackend):
                 clusterfusion_rms_weight,
                 clusterfusion_eps,
                 clusterfusion_positions,
-                clusterfusion_cos_sin
+                clusterfusion_cos_sin,
             )
-                
+
         except ImportError:
-            raise RuntimeError("ClusterFusion module not found. Please build and install clusterfusion.")
+            raise RuntimeError(
+                "ClusterFusion module not found. Please build and install clusterfusion."
+            )
         except Exception as e:
             raise RuntimeError(f"ClusterFusion kernel failed: {e}")
-        
+
         return clusterfusion_output, clusterfusion_residual_output
 
     def _get_wrapper_idx(self, layer: RadixAttention):

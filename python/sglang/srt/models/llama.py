@@ -17,6 +17,7 @@
 """Inference-only LLaMA model compatible with HuggingFace weights."""
 
 import logging
+from types import MethodType
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import torch
@@ -54,7 +55,6 @@ from sglang.srt.model_loader.weight_utils import (
 )
 from sglang.srt.utils import add_prefix, make_layers
 from sglang.utils import get_exception_traceback
-from types import MethodType
 
 logger = logging.getLogger(__name__)
 
@@ -251,10 +251,10 @@ class LlamaDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         forward_batch: ForwardBatch,
         residual: Optional[torch.Tensor],
-        **kwargs
+        **kwargs,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        use_clusterfusion = kwargs.get('use_clusterfusion', False)
+        use_clusterfusion = kwargs.get("use_clusterfusion", False)
 
         if use_clusterfusion:
             hidden_states, residual = self._forward_clusterfusion(
@@ -290,19 +290,25 @@ class LlamaDecoderLayer(nn.Module):
         # Handle residual connection
         if residual is None:
             if not hasattr(self, "residual_buffer"):
-                self.residual_buffer = torch.zeros_like(hidden_states, device="cuda", dtype=torch.float16)
+                self.residual_buffer = torch.zeros_like(
+                    hidden_states, device="cuda", dtype=torch.float16
+                )
             residual = self.residual_buffer
             residual.zero_()
 
         output = None
         if output is None:
             if not hasattr(self, "output_buffer"):
-                self.output_buffer = torch.zeros_like(hidden_states, device="cuda", dtype=torch.float16)
+                self.output_buffer = torch.zeros_like(
+                    hidden_states, device="cuda", dtype=torch.float16
+                )
             output = self.output_buffer
         residual_output = None
         if residual_output is None:
             if not hasattr(self, "residual_output_buffer"):
-                self.residual_output_buffer = torch.zeros_like(hidden_states, device="cuda", dtype=torch.float16)
+                self.residual_output_buffer = torch.zeros_like(
+                    hidden_states, device="cuda", dtype=torch.float16
+                )
             residual_output = self.residual_output_buffer
 
         # Call the fused kernel through the backend
@@ -321,9 +327,9 @@ class LlamaDecoderLayer(nn.Module):
             clusterfusion_o_weight=self.self_attn.o_proj.weight,
             clusterfusion_rms_weight=self.input_layernorm.weight,
             clusterfusion_eps=self.input_layernorm.variance_epsilon,
-            clusterfusion_positions = positions,
-            clusterfusion_cos_sin = self.self_attn.rotary_emb.cos_sin_cache,
-            layer_id=self.self_attn.attn.layer_id
+            clusterfusion_positions=positions,
+            clusterfusion_cos_sin=self.self_attn.rotary_emb.cos_sin_cache,
+            layer_id=self.self_attn.attn.layer_id,
         )
 
         return hidden_states, residual
@@ -390,20 +396,20 @@ class LlamaModel(nn.Module):
         aux_hidden_states = []
         # Check if using ClusterFusion backend for fused kernel
         use_clusterfusion = (
-            forward_batch.attn_backend.__class__.__name__ == 'ClusterFusionBackend' and
-            forward_batch.forward_mode.is_decode()
+            forward_batch.attn_backend.__class__.__name__ == "ClusterFusionBackend"
+            and forward_batch.forward_mode.is_decode()
         )
         for i in range(self.start_layer, self.end_layer):
             if i in self.layers_to_capture:
                 aux_hidden_states.append(hidden_states + residual)
             layer = self.layers[i]
-            
+
             hidden_states, residual = layer(
                 positions,
                 hidden_states,
                 forward_batch,
                 residual,
-                use_clusterfusion=use_clusterfusion
+                use_clusterfusion=use_clusterfusion,
             )
 
         if not self.pp_group.is_last_rank:

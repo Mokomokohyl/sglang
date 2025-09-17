@@ -1457,7 +1457,10 @@ class ModelRunner:
             logger.info(f"Intel AMX attention backend is enabled.")
             return IntelAMXAttnBackend(self)
         elif backend_str == "clusterfusion":
-            from sglang.srt.layers.attention.clusterfusion_backend import ClusterFusionBackend
+            from sglang.srt.layers.attention.clusterfusion_backend import (
+                ClusterFusionBackend,
+            )
+
             return ClusterFusionBackend(self)
         else:
             raise ValueError(f"Invalid attention backend: {backend_str}")
